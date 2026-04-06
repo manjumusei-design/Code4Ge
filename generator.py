@@ -1,119 +1,122 @@
-"""Conventional commit message generations for CommitForge"""
+"""Conventional commit message generation for CommitForge."""
 
 from __future__ import annotations
 
-import logging
 import re
 from collections import Counter
-from typing import Dict, List, Optional, Sequence
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
 
-from commitforge.parser import DiffResult, FileChange 
+from commitforge.parser import DiffResult, FileChange
 
-logger = logging.getLogger(__name__)
-
-#Heuristics
-
+# Heuristics
 _COMMIT_TYPE_KEYWORDS: Dict[str, Sequence[str]] = {
-    "feat": ["add", "create", "introduce","implement", "new"],
-    "fix":["fix", "resolve", "patch", "correct", "bug"],
-    "docs": ["doc", "readme", "comment" , "typo", "guide"],
+    "feat": ["add", "create", "introduce", "implement", "new"],
+    "fix": ["fix", "resolve", "patch", "correct", "bug"],
+    "docs": ["doc", "readme", "comment", "typo", "guide"],
     "style": ["format", "whitespace", "lint", "indent", "style"],
     "refactor": ["refactor", "restructure", "reorganize", "clean", "simplify"],
-    "perf": ["optimize", "spec", "coverage","assert"],
+    "perf": ["optimize", "speed", "performance", "cache", "lazy", "memoize"],
+    "test": ["test", "spec", "coverage", "assert", "unittest"],
     "chore": ["update", "bump", "ignore", "config", "ci", "build", "deps"],
 }
 
-_SCOPE_HINTS: Dict[str,str] = {
-    "readme.md": "docs",
-    "docs/": "docs",
-    "tests/": "test",
-    "ci/": "ci",
-    ".github/": "ci",
-    "setup.py": "build",
-    "pyproject.toml": "build",
-    "requirements.txt": "deps"
+_SCOPE_HINTS: Dict[str, str] = {
+    "readme.md": "docs", "docs/": "docs", "tests/": "test",
+    "test/": "test", "ci/": "ci", ".github/": "ci",
+    "setup.py": "build", "pyproject.toml": "build",
+    "requirements.txt": "deps",
 }
 
-def generate_commit_suggestion(diff: DiffResult) -> str:
-    """Return a conventionalk commit message based on the diff"""
-    if not diff.files
-        return "chore: No changes were detected"
+
+def generate_commit_suggestion(diff: DiffResult) -> Dict[str, str]:
+    """Return a conventional commit message based on the diff.
     
-    commit_type = _infer_commit_type(diff.files)
+    Returns ``{"type": str, "scope": str, "summary": str, "body": str}``.
+    """
+    if not diff.files:
+        return {"type": "chore", "scope": "", "summary": "no changes detected", "body": ""}
+
+    ctype = _infer_type(diff.files)
     scope = _infer_scope(diff.files)
     summary = _build_summary_line(diff.files)
-    
-    prefix = f"{commit}"
-    parts = [f"{prefix}: {summary}"]
-    
-    body_lines = build_body(diff.files)
-    if body_lines:
-        parts.append("")
-        parts.extend(body_lines)
-        
-    return "\n".join(parts)
+    body = _build_body(diff.files)
+    return {"type": ctype, "scope": scope, "summary": summary, "body": body}
 
-def _infer_commit_type(files: List[FileChange]) -> str:
-    """Pick the most likely conventional commit type based on the file"""
+
+def _infer_type(files: List[FileChange]) -> str:
+    """Pick the most likely conventional commit type from changed files."""
     scores: Counter[str] = Counter()
-    
     for fc in files:
-        basename = Path(fc.path).name.lower()
+        text = (fc.path + " " + " ".join(fc.hunks)).lower()
         for ctype, keywords in _COMMIT_TYPE_KEYWORDS.items():
             for kw in keywords:
-                if kw in keywords:
-                    if kw in basename or kw in fc.path.lower():
-                        scores[ctype] += 1
-                        
-    #Deletions might not have strong keywords so we will lean it torwards a chore or a fix 
+                if kw in text:
+                    scores[ctype] += 1
     if all(f.status == "D" for f in files):
         scores["chore"] += 2
-        
     if not scores:
-        # Default by file extension heuristics
-        if any(f.path.endswith((".md", ".rst", ".txt")) for f in files):
-            return "docs"
-        if any(f.path.endswith((".cfg", ".toml", ".ini", ".json", ".yaml", ".yml")) for f in files):
-            return "chore"
-        return "feat"
-    
+        return _type_by_extension(files)
     return scores.most_common(1)[0][0]
 
+
+def _type_by_extension(files: List[FileChange]) -> str:
+    """Fallback: guess type from file extensions."""
+    if any(f.path.endswith((".md", ".rst", ".txt")) for f in files):
+        return "docs"
+    if any(f.path.endswith((".cfg", ".toml", ".ini", ".json", ".yaml", ".yml"))
+           for f in files):
+        return "chore"
+    return "feat"
+
+
 def _infer_scope(files: List[FileChange]) -> Optional[str]:
-    """Extract an optional scope from common directory hints"""
+    """Extract an optional scope from common directory hints."""
     for fc in files:
         for hint, scope in _SCOPE_HINTS.items():
             if fc.path.startswith(hint) or fc.path.endswith(hint):
                 return scope
-    return None
+    return ""
+
 
 def _build_summary_line(files: List[FileChange]) -> str:
-    """Create a one line summary under 72 chars"""
+    """Create a one-line summary under 72 characters."""
     if len(files) == 1:
-        return f"update {len(files)} file{'s' if len(files) != 1 else ''}"
+        return _shorten(files[0].path, 60)
+    return f"Update {len(files)} files"
 
-def _build_body(files: List[FileChange]) -> List[str]:
-    """Optional body listing changed files (maximum of 10)"""
-    body: List[str] =[]
+
+def _build_body(files: List[FileChange]) -> str:
+    """List changed files (max 10) with status labels."""
+    lines: List[str] = []
     for fc in files[:10]:
         status_label = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}.get(
             fc.status, "changed"
         )
-        body.append(f"- {status_label} `{fc.path}`")
-        if len(files) > 10:
-            body.append (f"... and {len(files) -10]} more")
-        return body
-    
+        lines.append(f"- {status_label} `{fc.path}`")
+    if len(files) > 10:
+        lines.append(f"... and {len(files) - 10} more")
+    return "\n".join(lines)
+
+
 def _shorten(text: str, max_len: int) -> str:
-    """Truncate *text* with ellipsis if needed."""
+    """Truncate *text* with ellipsis if it exceeds *max_len*."""
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."
 
 
-# Keyword-based scope extraction from diff hunks
+def format_commit(commit: Dict[str, str]) -> str:
+    """Render a commit dict into a conventional commit string."""
+    prefix = f"{commit['type']}({commit['scope']})" if commit["scope"] else commit["type"]
+    header = f"{prefix}: {commit['summary']}"
+    if commit["body"]:
+        return f"{header}\n\n{commit['body']}"
+    return header
+
+
 def _extract_keywords_from_hunks(hunks: List[str]) -> List[str]:
-    """Return unique keywords found in diff hunk lines."""
+    """Return unique keywords found in diff hunk lines (unused helper)."""
     found: List[str] = []
     keyword_pattern = re.compile(r"\b(TODO|FIXME|BUG|HACK|XXX)\b", re.IGNORECASE)
     for hunk in hunks:
@@ -121,4 +124,3 @@ def _extract_keywords_from_hunks(hunks: List[str]) -> List[str]:
             if line.startswith("+"):
                 found.extend(keyword_pattern.findall(line))
     return list(dict.fromkeys(found))
-
