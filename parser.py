@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 import logging
 import subprocess
 from dataclasses import dataclass, field
@@ -10,6 +9,17 @@ from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _guess_status_from_numstat(ins: str, dels: str) -> str:
+    """Infer A/M/D/R status from numstat fields."""
+    if ins == "-" and dels == "-":
+        return "R"  # binary / rename
+    if dels == "0":
+        return "A"
+    if ins == "0":
+        return "D"
+    return "M"
 
 
 @dataclass
@@ -33,7 +43,7 @@ class DiffResult:
 
     @property
     def files_changed(self) -> int:
-        return len(self.files) 
+        return len(self.files)
     
     @property
     def additions(self) -> int:
@@ -78,32 +88,18 @@ def get_current_branch(repo_root: Path) -> str:
         return "HEAD"
 
 
-def parse_diff_staged(repo_root: Path) -> DiffResult:
-    """Parse staged changes (git diff --cached)."""
-    return _parse_diff(repo_root, "HEAD")
-
-
-def parse_diff_unstaged(repo_root: Path) -> DiffResult:
-    """Parse unstaged changes (git diff HEAD)."""
-    return _parse_diff(repo_root, "HEAD")
-
-
-def parse_diff_working(repo_root: Path) -> DiffResult:
-    """Parse all working-tree changes (git diff HEAD + untracked)."""
-    result = _parse_diff(repo_root, "HEAD")
-    _add_untracked_files(repo_root, result)
-    return result
-
-
-def _parse_diff(repo_root: Path, base: str) -> DiffResult:
+def _parse_diff(repo_root: Path, base: str, cached: bool = False) -> DiffResult:
     """Run git diff against *base* and return structured result."""
     diff_result = DiffResult()
     diff_result.branch = get_current_branch(repo_root)
 
+    cmd = ["diff", "--numstat", "--diff-filter=ACMRD"]
+    if cached:
+        cmd.insert(0, "--cached")
+    cmd.append(base)
+
     try:
-        summary = _run_git(
-            repo_root, "diff", "--numstat", "--diff-filter=ACMRD", base
-        )
+        summary = _run_git(repo_root, *cmd)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         diff_result.error = str(exc)
         logger.warning("git diff failed: %s", exc)
@@ -113,18 +109,36 @@ def _parse_diff(repo_root: Path, base: str) -> DiffResult:
         parts = line.split("\t")
         if len(parts) < 3:
             continue
-        ins, dels, filepath = parts
+        ins, dels = parts[0], parts[1]
+        filepath = parts[-1]  # Safely handles renames (4 columns) and normal files (3 columns)
         status = _guess_status_from_numstat(ins, dels)
         diff_result.files.append(
             FileChange(
                 path=filepath,
                 status=status,
-                insertions=_safe_int(ins),
-                deletions=_safe_int(dels),
+                insertions=int(ins) if ins.isdigit() else 0,
+                deletions=int(dels) if dels.isdigit() else 0,
             )
         )
 
     return diff_result
+
+
+def parse_diff_staged(repo_root: Path) -> DiffResult:
+    """Parse staged changes (git diff --cached HEAD)."""
+    return _parse_diff(repo_root, "HEAD", cached=True)
+
+
+def parse_diff_unstaged(repo_root: Path) -> DiffResult:
+    """Parse unstaged changes (git diff HEAD)."""
+    return _parse_diff(repo_root, "HEAD", cached=False)
+
+
+def parse_diff_working(repo_root: Path) -> DiffResult:
+    """Parse all working-tree changes (git diff HEAD + untracked)."""
+    result = _parse_diff(repo_root, "HEAD")
+    _add_untracked_files(repo_root, result)
+    return result
 
 
 def _add_untracked_files(repo_root: Path, result: DiffResult) -> None:
@@ -138,27 +152,18 @@ def _add_untracked_files(repo_root: Path, result: DiffResult) -> None:
         logger.warning("Failed to list untracked files: %s", exc)
 
 
-def _safe_int(value: str) -> int:
-    """Convert to int, returning 0 on failure."""
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return 0
-
-
 def get_recent_commits(repo_root: Path, count: int = 10) -> List[str]:
     """Return the last *count* commit subjects."""
     try:
-        output = _run_git(
-            repo_root, "log", f"-{count}", "--format=%s"
-        )
+        output = _run_git(repo_root, "log", f"-{count}", "--format=%s")
         return [line.strip() for line in output.splitlines() if line.strip()]
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         logger.warning("Failed to get recent commits: %s", exc)
         return []
 
+
 def parse_diff_since(repo_root: Path, since: str) -> DiffResult:
-    """Parse diff for changes since *something* like a date string or time reference you wanna look up from"""
+    """Parse diff for changes since *since* (ISO date string like '2024-01-01')."""
     try:
         ref = _run_git(repo_root, "log", "-1", f"--since={since}", "--format=%H").strip()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -167,13 +172,3 @@ def parse_diff_since(repo_root: Path, since: str) -> DiffResult:
         logger.warning("No commits found since %s; scanning all changes.", since)
         return parse_diff_working(repo_root)
     return _parse_diff(repo_root, ref)
-
-def _guess_status_from_numstat(ins: str, dels: str) -> str:
-    """Infer A/M/D status from numstat fields."""
-    if ins == "-" and dels == "-":
-        return "R"  # binary / rename
-    if dels == "0":
-        return "A"
-    if ins == "0":
-        return "D"
-    return "M"
