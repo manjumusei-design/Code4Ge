@@ -121,3 +121,7 @@ def _extract_keywords_from_hunks(hunks: List[str]) -> List[str]:
             if line.startswith("+"):
                 found.extend(keyword_pattern.findall(line))
     return list(dict.fromkeys(found))
+
+fjfjdskfkdkfkfdfghg
+hjhghjhghjhghjhghjhgghjhjhghjhghjkkk
+kklkjjkkhjhjhjdasdsfdsdfdsdfds
