@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-    import logging
+import datetime
+import logging
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FileChange:
-    """Represent a single changed file with metadata."""
+    """Represents a single changed file with metadata."""
 
     path: str
     status: str  # A(dded), M(odified), D(eleted), R(enamed)
@@ -30,6 +31,22 @@ class DiffResult:
     files: List[FileChange] = field(default_factory=list)
     error: Optional[str] = None
 
+    @property
+    def files_changed(self) -> int:
+        return len(self.files) 
+    
+    @property
+    def additions(self) -> int:
+        return sum(f.insertions for f in self.files)
+    
+    @property
+    def deletions(self) -> int:
+        return sum(f.deletions for f in self.files)
+    
+    @property
+    def file_paths(self) -> List[str]:  
+        return [f.path for f in self.files]
+    
 
 def _run_git(cwd: Path, *args: str) -> str:
     """Run a git command safely; return stdout or raise."""
@@ -121,17 +138,6 @@ def _add_untracked_files(repo_root: Path, result: DiffResult) -> None:
         logger.warning("Failed to list untracked files: %s", exc)
 
 
-def _guess_status_from_numstat(ins: str, dels: str) -> str:
-    """Infer A/M/D status from numstat fields."""
-    if ins == "-" and dels == "-":
-        return "R"  # binary / rename
-    if dels == "0":
-        return "A"
-    if ins == "0":
-        return "D"
-    return "M"
-
-
 def _safe_int(value: str) -> int:
     """Convert to int, returning 0 on failure."""
     try:
@@ -150,3 +156,24 @@ def get_recent_commits(repo_root: Path, count: int = 10) -> List[str]:
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         logger.warning("Failed to get recent commits: %s", exc)
         return []
+
+def parse_diff_since(repo_root: Path, since: str) -> DiffResult:
+    """Parse diff for changes since *something* like a date string or time reference you wanna look up from"""
+    try:
+        ref = _run_git(repo_root, "log", "-1", f"--since={since}", "--format=%H").strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        ref = ""
+    if not ref: 
+        logger.warning("No commits found since %s; scanning all changes.", since)
+        return parse_diff_working(repo_root)
+    return _parse_diff(repo_root, ref)
+
+def _guess_status_from_numstat(ins: str, dels: str) -> str:
+    """Infer A/M/D status from numstat fields."""
+    if ins == "-" and dels == "-":
+        return "R"  # binary / rename
+    if dels == "0":
+        return "A"
+    if ins == "0":
+        return "D"
+    return "M"
