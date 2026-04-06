@@ -22,9 +22,16 @@ def _deep_merge(base: ConfigType, override: ConfigType) -> None:
             base[key] = val
             
 def _normalize(cfg: ConfigType) -> ConfigType:
-    """Ensure legacy are converted and migrated to the current format"""
+    """Ensure legacy keys are migrated to current schema."""
     if "max_file_size_kb" in cfg:
-        cfg["max_file_size_mb"] = cfg.pop("max_file_size_kb") / 1024.0
+        val = cfg.pop("max_file_size_kb")
+        if isinstance(val, (int, float)):
+            cfg["max_file_size_mb"] = val / 1024.0
+        else:
+            logger.warning(
+                "Invalid max_file_size_kb value %r; using default", val
+            )
+            cfg["max_file_size_mb"] = DEFAULT_CONFIG.get("max_file_size_mb")
     return cfg
 
 
