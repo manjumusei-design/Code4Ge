@@ -1,4 +1,4 @@
-"""CommitForge -- Offline CLI for semantic commit suggestions and repo health checks."""
+"""CommitForge is an offline CLI for semantic commit suggestions and repo health checks made to help with my coding journey and to slightly automate and optimize it."""
 
 __version__ = "0.1.0"
 
