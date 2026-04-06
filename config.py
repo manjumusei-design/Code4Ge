@@ -42,5 +42,12 @@ def write_default_config(repo_root: Path) -> Path:
 def validate_config(cfg: ConfigType) -> list[str]:
     warnings: list[str] = []
     if not isinstance(cfg.get("ignored_paths"), list):
-        warnings.append("'ignored_paths' should be a list")
-        if 
+        warnings.append("'ignored_paths' should be a list.")
+    max_sz = cfg.get("max_file_size_kb")
+    if not isinstance(max_sz, (int, float)) or max_sz <= 0:
+        warnings.append("'max_file_size_kb' must be positive.")
+    for sev in ("warning", "critical"):
+        val = cfg.get("severity_thresholds", {}).get(sev)
+        if not isinstance(val, (int, float)) or val <= 0:
+            warnings.append(f"'severity_thresholds.{sev}' must be positive.")
+    return warnings
