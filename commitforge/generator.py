@@ -62,7 +62,7 @@ def _is_source_heavy(files: List[FileChange]) -> bool:
 
 def _is_config_only(files: List[FileChange]) -> bool:
     """Return True when all changes touch config and deps files"""
-    config_exts = {".cfg", ".toml", ".ini", ".json", ".yaml" ".yml" ".gitignore"}
+    config_exts = {".cfg", ".toml", ".ini", ".json", ".yaml", ".yml", ".gitignore"}
     config_names = {".gitignore", ".editorconfig", "Makefile", "Dockerfile"}
     return all(
         Path(f.path).suffix in config_exts or Path(f.path).name in config_names

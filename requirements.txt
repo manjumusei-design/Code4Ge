@@ -1,0 +1,1 @@
+# CommitForge has zero external dependencies — stdlib only.

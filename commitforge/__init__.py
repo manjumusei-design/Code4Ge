@@ -1,6 +1,6 @@
 """CommitForge is an offline CLI for semantic commit suggestions and repo health checks made to help with my coding journey and to slightly automate and optimize it."""
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 DEFAULT_CONFIG = {
     "ignored_paths": ["node_modules", ".git", ".venv", "__pycache__", "dist", "build"],

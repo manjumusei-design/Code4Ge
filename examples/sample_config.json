@@ -1,0 +1,11 @@
+{
+  "ignore_paths": ["vendor", "third_party", ".git"],
+  "max_file_size_mb": 1.0,
+  "severity_thresholds": {"warning": 5, "critical": 2},
+  "commit_mappings": {
+    "feat": "feat",
+    "fix": "fix",
+    "docs": "docs",
+    "refactor": "refactor"
+  }
+}
