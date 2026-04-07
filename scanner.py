@@ -1,156 +1,150 @@
-"""Anti-pattern detection and code-health scanning for CommitForge."""
+"""Code-health scanners for CommitForge."""
 
 from __future__ import annotations
 
 import ast
-import fnmatch
+import collections
 import logging
-import os
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import List
+
+from commitforge.filters import apply_ignore
+from commitforge.types import Config, Issue
+from commitforge.utils import log
 
 logger = logging.getLogger(__name__)
-
-SEVERITY_CRITICAL = "critical"
-SEVERITY_WARNING = "warning"
-SEVERITY_INFO = "info"
-
-BINARY_EXTENSIONS = {".pyc", ".pyo", ".so", ".dll", ".exe", ".png", ".jpg", ".gif"}
+_BINARY_MARK = b"\x00"
+_TODO_RE = re.compile(r"(?i)\b(TODO|FIXME|HACK|BUG)\b")
+_IMPORT_RE = re.compile(r"^\s*(?:from\s+\S+\s+)?import\s+(.+)", re.MULTILINE)
 
 
-@dataclass
-class Issue:
-    """A single health issue found in a file."""
-
-    file: str
-    rule: str
-    severity: str
-    message: str
-    line: Optional[int] = None
-
-
-def scan_large_files(
-    root: Path, max_size_mb: float, ignored: Sequence[str] = ()
-) -> List[Tuple[str, float]]:
-    """Return list of (relative_path, size_mb) exceeding *max_size_mb*."""
-    results: List[Tuple[str, float]] = []
-    for fp in _iter_files(root, ignored):
+def scan_large_files(repo_root: Path, config: Config) -> List[Issue]:
+    """Return Issues for files exceeding config.max_file_size_mb."""
+    issues: List[Issue] = []
+    limit = config.max_file_size_mb * 1024 * 1024
+    for fp in _iter_files(repo_root, config.ignore_paths):
         try:
-            size_mb = fp.stat().st_size / (1024 * 1024)
+            size = fp.stat().st_size
         except OSError:
             continue
-        if size_mb > max_size_mb:
-            results.append((str(fp.relative_to(root)), round(size_mb, 2)))
-    return results
+        if size > limit:
+            rel = str(fp.relative_to(repo_root))
+            issues.append(Issue(rel, "large-file", "warning",
+                                "{:.1f} MB exceeds {:.1f} MB limit".format(
+                                    size / (1024 ** 2), config.max_file_size_mb)))
+    return issues
 
 
-def scan_binaries(root: Path, ignored: Sequence[str] = ()) -> List[str]:
-    """Return list of relative paths detected as binary files."""
-    results: List[str] = []
-    for fp in _iter_files(root, ignored):
-        if _is_binary(fp):
-            results.append(str(fp.relative_to(root)))
-    return results
+def scan_binaries(repo_root: Path,
+                  ignore_paths: List[str]) -> List[Issue]:
+    """Detect binary files by checking for \\x00 in the first 512 bytes."""
+    issues: List[Issue] = []
+    for fp in _iter_files(repo_root, ignore_paths):
+        try:
+            chunk = fp.read_bytes()[:512]
+        except OSError:
+            continue
+        if _BINARY_MARK in chunk:
+            issues.append(Issue(str(fp.relative_to(repo_root)),
+                                "binary-file", "warning",
+                                "Binary content detected"))
+    return issues
 
 
-def scan_todos(root: Path, ignored: Sequence[str] = ()) -> Dict[str, int]:
-    """Return {file: count} of TODO/FIXME/HACK/BUG markers per file."""
-    results: Dict[str, int] = {}
-    pattern = re.compile(r"\b(TODO|FIXME|HACK|BUG)\b", re.IGNORECASE)
-    for fp in _iter_files(root, ignored):
+def scan_todos_fixmes(repo_root: Path,
+                      ignore_paths: List[str]) -> List[Issue]:
+    """Return one Issue per file containing 5+ TODO/FIXME/HACK/BUG markers."""
+    issues: List[Issue] = []
+    for fp in _iter_files(repo_root, ignore_paths):
         try:
             text = fp.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        count = len(pattern.findall(text))
-        if count > 0:
-            results[str(fp.relative_to(root))] = count
-    return results
-
-I wa
-def scan_missing_docstrings(root: Path, ignored: Sequence[str] = ()) -> List[Issue]:
-    """Return issues for public functions/classes without docstrings."""
-    results: List[Issue] = []
-    for fp in _iter_files(root, ignored):
-        if fp.suffix != ".py":
-            continue
-        results.extend(_check_docstrings(fp, root))
-    return results
-
-
-def run_all_scans(
-    root: Path,
-    max_file_size_mb: float = 0.5,
-    ignored_paths: Sequence[str] = (),
-) -> List[Dict[str, Any]]:
-    """Run every scanner and return a unified list of issue dicts."""
-    issues: List[Dict[str, Any]] = []
-    for path, size in scan_large_files(root, max_file_size_mb, ignored_paths):
-        issues.append({"file": path, "rule": "large-file",
-                        "severity": SEVERITY_WARNING,
-                        "message": f"{size} MB (limit {max_file_size_mb} MB)",
-                        "line": None})
-    for path in scan_binaries(root, ignored_paths):
-        issues.append({"file": path, "rule": "binary-file",
-                        "severity": SEVERITY_INFO,
-                        "message": "Binary file detected", "line": None})
-    for path, count in scan_todos(root, ignored_paths).items():
+        count = len(_TODO_RE.findall(text))
         if count >= 5:
-            issues.append({"file": path, "rule": "excessive-todo",
-                            "severity": SEVERITY_WARNING,
-                            "message": f"{count} TODO/FIXME markers", "line": None})
-    for issue in scan_missing_docstrings(root, ignored_paths):
-        issues.append({"file": issue.file, "rule": issue.rule,
-                        "severity": issue.severity,
-                        "message": issue.message, "line": issue.line})
+            issues.append(Issue(str(fp.relative_to(repo_root)),
+                                "excessive-todo", "warning",
+                                "{} TODO/FIXME markers".format(count)))
     return issues
 
 
-### Helper functions fore scanning assistance
+def scan_missing_docstrings(repo_root: Path,
+                            ignore_paths: List[str]) -> List[Issue]:
+    """Flag public functions/classes that lack a docstring."""
+    issues: List[Issue] = []
+    for fp in _iter_files(repo_root, ignore_paths):
+        if fp.suffix != ".py":
+            continue
+        issues.extend(_check_docstrings(fp, repo_root))
+    return issues
 
-def _is_binary(filepath: Path) -> bool:
-    """Heuristic: known extensions or null byte in first 8 KB."""
-    if filepath.suffix in BINARY_EXTENSIONS:
-        return True
-    try:
-        return b"\x00" in filepath.read_bytes()[:8192]
-    except OSError:
-        return False
+
+def scan_unused_imports(repo_root: Path,
+                        ignore_paths: List[str]) -> List[Issue]:
+    """Heuristic: find imported names that never appear elsewhere in the file."""
+    issues: List[Issue] = []
+    for fp in _iter_files(repo_root, ignore_paths):
+        if fp.suffix != ".py":
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for name, lineno in _find_unused(text):
+            issues.append(Issue(str(fp.relative_to(repo_root)),
+                                "unused-import", "warning",
+                                "'{}' imported but unused".format(name),
+                                lineno))
+    return issues
 
 
-def _check_docstrings(filepath: Path, root: Path) -> List[Issue]:
+# Helpers
+
+def _iter_files(root: Path, ignore: List[str]) -> List[Path]:
+    """Yield files under *root*, skipping *ignore* patterns."""
+    found: List[Path] = []
+    for dirpath, dirs, names in root.walk():
+        dirs[:] = [d for d in dirs if not apply_ignore(Path(d), ignore)]
+        for name in names:
+            fp = Path(dirpath) / name
+            if not apply_ignore(fp, ignore):
+                found.append(fp)
+    return found
+
+
+def _check_docstrings(filepath: Path, repo_root: Path) -> List[Issue]:
     """Return missing-docstring issues for a single Python file."""
     try:
-        source = filepath.read_text(encoding="utf-8", errors="replace")
-        tree = ast.parse(source, filename=str(filepath))
-    except (OSError, SyntaxError):
+        tree = ast.parse(filepath.read_text(encoding="utf-8",
+                                            errors="replace"),
+                         filename=str(filepath))
+    except (SyntaxError, UnicodeDecodeError, OSError) as exc:
+        logger.debug("Cannot parse %s: %s", filepath, exc)
         return []
-    rel = str(filepath.relative_to(root))
+    rel = str(filepath.relative_to(repo_root))
     issues: List[Issue] = []
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
             if node.name.startswith("_"):
                 continue
             if not ast.get_docstring(node):
-                issues.append(Issue(rel, "missing-docstring", SEVERITY_INFO,
-                                    f"'{node.name}' lacks a docstring", node.lineno))
+                issues.append(Issue(rel, "missing-docstring", "warning",
+                                    "'{}' lacks a docstring".format(node.name),
+                                    node.lineno))
     return issues
 
 
-def _iter_files(root: Path, ignored: Sequence[str]) -> List[Path]:
-    """Yield files under *root*, skipping ignored patterns."""
-    skip = set(ignored) | {".git"}
-    files: List[Path] = []
-    for dirpath, dirs, fnames in os.walk(root):
-        dp = Path(dirpath)
-        dirs[:] = [d for d in dirs if d not in skip and not _matches_any(d, ignored)]
-        for fname in fnames:
-            if not _matches_any(fname, ignored):
-                files.append(dp / fname)
-    return files
-
-
-def _matches_any(name: str, patterns: Sequence[str]) -> bool:
-    return any(fnmatch.fnmatch(name, pat) for pat in patterns
+def _find_unused(text: str) -> List[tuple]:
+    """Return ``[(name, lineno)]`` for likely unused imports."""
+    imports: List[tuple] = []
+    for match in _IMPORT_RE.finditer(text):
+        for alias in match.group(1).split(","):
+            name = alias.strip().split(" as ")[-1].split(".")[0].strip()
+            if name and name != "*":
+                imports.append((name, text[:match.start()].count("\n") + 1))
+    if not imports:
+        return []
+    usage = collections.Counter(text.split())
+    return [(n, ln) for n, ln in imports if usage.get(n, 0) <= 1]
