@@ -95,7 +95,8 @@ def _parse_numstat(lines: List[str],
         parts = line.split("\t")
         if len(parts) < 3:
             continue
-        add, delete, path = parts
+        add, delete = parts[0], parts[1]
+        path = parts[2] if len(parts) < 5 else parts[4]
         if _should_skip(path, ignore_patterns):
             continue
         additions = _safe_int(add)

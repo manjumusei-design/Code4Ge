@@ -37,7 +37,7 @@ def apply_since(repo_root: Path, since: str) -> bool:
     except ValueError:
         log_msg("Invalid --since date '{}'; ignoring filter".format(since))
         return True
-    out = _run_git_log(repo_root, "--1", "--format=%ci")
+    out = _run_git_log(repo_root, "-1", "--format=%ci")
     if out is None:
         return True
     commit_date= _parse_commit_date(out.strip())
