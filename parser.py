@@ -1,174 +1,132 @@
-"""Git diff/log parsing and change categorisation for CommitForge."""
+"""Git diff parser for CommitForge."""
 
 from __future__ import annotations
 
 import logging
 import subprocess
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+
+from commitforge.types import DiffResult, FileChange
+from commitforge.utils import detect_repo_root, log
 
 logger = logging.getLogger(__name__)
+_GIT_TIMEOUT = 30
 
 
-def _guess_status_from_numstat(ins: str, dels: str) -> str:
-    """Infer A/M/D/R status from numstat fields."""
-    if ins == "-" and dels == "-":
-        return "R"  # binary / rename
-    if dels == "0":
-        return "A"
-    if ins == "0":
-        return "D"
-    return "M"
-
-
-@dataclass
-class FileChange:
-    """Represents a single changed file with metadata."""
-
-    path: str
-    status: str  # A(dded), M(odified), D(eleted), R(enamed)
-    insertions: int = 0
-    deletions: int = 0
-    hunks: List[str] = field(default_factory=list)
-
-
-@dataclass
-class DiffResult:
-    """Container for parsed git diff output."""
-
-    branch: str = ""
-    files: List[FileChange] = field(default_factory=list)
-    error: Optional[str] = None
-
-    @property
-    def files_changed(self) -> int:
-        return len(self.files)
-    
-    @property
-    def additions(self) -> int:
-        return sum(f.insertions for f in self.files)
-    
-    @property
-    def deletions(self) -> int:
-        return sum(f.deletions for f in self.files)
-    
-    @property
-    def file_paths(self) -> List[str]:  
-        return [f.path for f in self.files]
-    
-
-def _run_git(cwd: Path, *args: str) -> str:
-    """Run a git command safely; return stdout or raise."""
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    )
-    return result.stdout
-
-
-def detect_repo_root(cwd: Path) -> Optional[Path]:
-    """Walk up from *cwd* until a .git directory is found."""
-    current = cwd.resolve()
-    for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
-    return None
-
-
-def get_current_branch(repo_root: Path) -> str:
-    """Return the current branch name or 'HEAD' if detached."""
+def _run_git(repo_root: Path, *args: str) -> Optional[str]:
+    """Run a git command; return stdout or None on failure."""
     try:
-        return _run_git(repo_root, "branch", "--show-current").strip() or "HEAD"
-    except subprocess.CalledProcessError:
-        return "HEAD"
-
-
-def _parse_diff(repo_root: Path, base: str, cached: bool = False) -> DiffResult:
-    """Run git diff against *base* and return structured result."""
-    diff_result = DiffResult()
-    diff_result.branch = get_current_branch(repo_root)
-
-    cmd = ["diff", "--numstat", "--diff-filter=ACMRD"]
-    if cached:
-        cmd.insert(0, "--cached")
-    cmd.append(base)
-
-    try:
-        summary = _run_git(repo_root, *cmd)
+        result = subprocess.run(
+            ["git", "-C", str(repo_root)] + list(args),
+            capture_output=True, text=True, check=True,
+            timeout=_GIT_TIMEOUT,
+        )
+        return result.stdout
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        diff_result.error = str(exc)
-        logger.warning("git diff failed: %s", exc)
-        return diff_result
+        logger.debug("git %s failed: %s", " ".join(args), exc)
+        return None
+    except FileNotFoundError:
+        log("git not found in PATH", logging.WARNING)
+        return None
 
-    for line in summary.splitlines():
+
+def parse_diff(repo_root: Path,
+               filters: Optional[Dict[str, Any]] = None) -> DiffResult:
+    """Parse ``git diff --numstat`` into a structured DiffResult.
+
+    Applies optional filters cuz (``{"since": str, "author": str,
+    "ignore": [str]}``).  Returns empty DiffResult on any git error.
+    """
+    resolved = detect_repo_root(repo_root)
+    if resolved is None:
+        log("Not a Git repository: {}".format(repo_root), logging.ERROR)
+        return DiffResult(repo_root=str(repo_root))
+
+    branch = _detect_branch(resolved)
+    base_ref = _resolve_base(resolved, filters)
+    raw = _run_git(resolved, "diff", "--numstat", base_ref)
+    if raw is None:
+        log("No diff data for base={}".format(base_ref), logging.WARNING)
+        return DiffResult(branch=branch, repo_root=str(resolved))
+
+    changes = _parse_numstat(raw.strip().splitlines(), filters)
+    additions = sum(c.additions for c in changes)
+    deletions = sum(c.deletions for c in changes)
+    return DiffResult(
+        branch=branch, files=changes,
+        total_additions=additions, total_deletions=deletions,
+        repo_root=str(resolved),
+    )
+
+
+def _detect_branch(repo_root: Path) -> str:
+    """Return current branch name, or ``"(detached)"`` if HEAD is detached."""
+    out = _run_git(repo_root, "branch", "--show-current")
+    return out.strip() if out and out.strip() else "(detached)"
+
+
+def _resolve_base(repo_root: Path,
+                  filters: Optional[Dict[str, Any]]) -> str:
+    """Determine the diff base ref, defaulting to ``HEAD``."""
+    if not filters:
+        return "HEAD"
+    if filters.get("since"):
+        from commitforge.filters import apply_since
+        if not apply_since(repo_root, filters["since"]):
+            log("No commits since {}; using HEAD".format(filters["since"]),
+                logging.WARNING)
+            return "HEAD"
+    if filters.get("author"):
+        from commitforge.filters import apply_author
+        if not apply_author(repo_root, filters["author"]):
+            log("No commits by {}; using HEAD".format(filters["author"]),
+                logging.WARNING)
+            return "HEAD"
+    return "HEAD"
+
+
+def _parse_numstat(lines: List[str],
+                   filters: Optional[Dict[str, Any]] = None) -> List[FileChange]:
+    """Convert numstat output lines into FileChange objects."""
+    changes: List[FileChange] = []
+    ignore_patterns = filters.get("ignore", []) if filters else []
+    for line in lines:
         parts = line.split("\t")
         if len(parts) < 3:
             continue
-        ins, dels = parts[0], parts[1]
-        filepath = parts[-1]  # Safely handles renames (4 columns) and normal files (3 columns)
-        status = _guess_status_from_numstat(ins, dels)
-        diff_result.files.append(
-            FileChange(
-                path=filepath,
-                status=status,
-                insertions=int(ins) if ins.isdigit() else 0,
-                deletions=int(dels) if dels.isdigit() else 0,
-            )
-        )
-
-    return diff_result
+        add, delete, path = parts
+        if _should_skip(path, ignore_patterns):
+            continue
+        additions = _safe_int(add)
+        deletions = _safe_int(delete)
+        status = "R" if add == "-" else _guess_status(additions, deletions)
+        changes.append(FileChange(
+            path=path, additions=additions,
+            deletions=deletions, status=status,
+        ))
+    return changes
 
 
-def parse_diff_staged(repo_root: Path) -> DiffResult:
-    """Parse staged changes (git diff --cached HEAD)."""
-    return _parse_diff(repo_root, "HEAD", cached=True)
-
-
-def parse_diff_unstaged(repo_root: Path) -> DiffResult:
-    """Parse unstaged changes (git diff HEAD)."""
-    return _parse_diff(repo_root, "HEAD", cached=False)
-
-
-def parse_diff_working(repo_root: Path) -> DiffResult:
-    """Parse all working-tree changes (git diff HEAD + untracked)."""
-    result = _parse_diff(repo_root, "HEAD")
-    _add_untracked_files(repo_root, result)
-    return result
-
-
-def _add_untracked_files(repo_root: Path, result: DiffResult) -> None:
-    """Append untracked files to *result.files*."""
+def _safe_int(value: str) -> int:
+    """Convert to int; return 0 for binary markers (``-``)."""
     try:
-        output = _run_git(repo_root, "ls-files", "--others", "--exclude-standard")
-        for line in output.splitlines():
-            if line.strip():
-                result.files.append(FileChange(path=line.strip(), status="A"))
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        logger.warning("Failed to list untracked files: %s", exc)
+        return int(value)
+    except (ValueError, TypeError):
+        return 0
 
 
-def get_recent_commits(repo_root: Path, count: int = 10) -> List[str]:
-    """Return the last *count* commit subjects."""
-    try:
-        output = _run_git(repo_root, "log", f"-{count}", "--format=%s")
-        return [line.strip() for line in output.splitlines() if line.strip()]
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        logger.warning("Failed to get recent commits: %s", exc)
-        return []
+def _guess_status(additions: int, deletions: int) -> str:
+    """Infer change status from numeric diff stats."""
+    if additions == 0 and deletions > 0:
+        return "D"
+    if additions > 0 and deletions == 0:
+        return "A"
+    return "M"
 
 
-def parse_diff_since(repo_root: Path, since: str) -> DiffResult:
-    """Parse diff for changes since *since* (ISO date string like '2024-01-01')."""
-    try:
-        ref = _run_git(repo_root, "log", "-1", f"--since={since}", "--format=%H").strip()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        ref = ""
-    if not ref: 
-        logger.warning("No commits found since %s; scanning all changes.", since)
-        return parse_diff_working(repo_root)
-    return _parse_diff(repo_root, ref)
+def _should_skip(path: str, ignore_patterns: List[str]) -> bool:
+    """Return True if *path* matches any ignore pattern."""
+    from commitforge.filters import apply_ignore
+    from pathlib import Path as _P
+    return any(apply_ignore(_P(path), [pat]) for pat in ignore_patterns)
