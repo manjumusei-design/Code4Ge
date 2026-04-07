@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from commitforge.cli import main
+from commitforge.cli import app
 
-main()
+app()

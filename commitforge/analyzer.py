@@ -7,7 +7,6 @@ import subprocess
 from pathlib import Path
 
 from commitforge.checks import CheckIssue, run_checks
-from commitforge.diff_parser import FileDiff, parse_diff
 from commitforge.types import CommitSuggestion, Config, Finding, ScanResult
 from commitforge.utils import _log, format_error
 
@@ -35,80 +34,265 @@ def _status_label(letter: str) -> str:
     return _STATUS_LABELS.get(letter, letter)
 
 
+def _get_untracked_files(repo_root: Path) -> list[str]:
+    """Get list of untracked file paths relative to repo root."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        _log(format_error(exc, "git ls-files --others"), logging.ERROR)
+        return []
+
+    return [
+        line.strip()
+        for line in result.stdout.strip().splitlines()
+        if line.strip()
+    ]
+
+
+def _get_diff_stats(repo_root: Path) -> dict[str, dict[str, int]]:
+    """Get diff stats per file: {path: {"added": N, "removed": N, "functions": [...]}}."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "HEAD", "--numstat"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        _log(format_error(exc, "git diff --numstat"), logging.ERROR)
+        return {}
+
+    stats: dict[str, dict[str, int]] = {}
+    for line in result.stdout.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3:
+            added, removed, path = parts
+            stats[path] = {
+                "added": int(added) if added != "-" else 0,
+                "removed": int(removed) if removed != "-" else 0,
+            }
+    return stats
+
+
+def _extract_functions_from_diff(repo_root: Path) -> dict[str, list[str]]:
+    """Extract added/removed function names from git diff."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "HEAD", "-U0", "--diff-filter=ACDMR"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return {}
+
+    import re
+    func_re = re.compile(r"^[+-]\s*(?:def|async def)\s+(\w+)\s*\(")
+    current_file: str | None = None
+    functions: dict[str, list[str]] = {}
+
+    for line in result.stdout.splitlines():
+        header = re.match(r"^diff --git a/.+ b/(.+)$", line)
+        if header:
+            current_file = header.group(1)
+            functions[current_file] = []
+            continue
+        if current_file:
+            match = func_re.match(line)
+            if match:
+                functions[current_file].append(match.group(1))
+
+    return functions
+
+
 def analyze_changes(
     repo_root: Path, config: Config, scan_result: ScanResult
 ) -> ScanResult:
-    """Enrich *scan_result* with findings based on git diff and pre-commit checks.
-
-    Parses the actual diff to extract meaningful change descriptions,
-    runs pre-commit checks on changed files, and evaluates thresholds.
-    """
-    file_diffs = parse_diff(repo_root)
-    if not file_diffs:
-        scan_result.findings = []
-        scan_result.thresholds_exceeded = False
-        return scan_result
-
+    """Enrich scan_result with findings from tracked and untracked files."""
     severity_counts: dict[str, int] = {}
 
-    for fdiff in file_diffs:
-        # Add findings from diff parsing
-        for change in fdiff.changes:
-            severity = _classify_change(change, fdiff)
-            finding_type = _map_commit_type(fdiff.path, config)
+    # 1. Get diff stats for tracked files
+    diff_stats = _get_diff_stats(repo_root)
+    diff_functions = _extract_functions_from_diff(repo_root)
+
+    for rel_path, stats in diff_stats.items():
+        if _should_ignore(rel_path, config.ignore_paths):
+            continue
+
+        abs_path = repo_root / rel_path
+        if not abs_path.is_file():
+            continue
+
+        added = stats["added"]
+        removed = stats["removed"]
+        funcs = diff_functions.get(rel_path, [])
+
+        # Build meaningful finding messages
+        if funcs:
+            for func in funcs:
+                scan_result.findings.append(
+                    Finding(
+                        path=rel_path,
+                        severity="info",
+                        type="feat",
+                        message=f"Added function `{func}()`",
+                    )
+                )
+                severity_counts["info"] = severity_counts.get("info", 0) + 1
+        elif added > 0 or removed > 0:
+            severity = _classify_file(rel_path)
+            finding_type = _map_commit_type(rel_path, config)
+            status = _status_label("M")
             scan_result.findings.append(
                 Finding(
-                    path=fdiff.path,
+                    path=rel_path,
                     severity=severity,
                     type=finding_type,
-                    message=change.details,
-                    line_number=change.line_number,
+                    message=f"{status}: {added} added, {removed} removed",
                 )
             )
             severity_counts[severity] = severity_counts.get(severity, 0) + 1
 
-        # If no structured changes detected, add a generic finding
-        if not fdiff.changes:
-            total = fdiff.added_lines + fdiff.removed_lines
-            if total > 0:
-                severity = _classify_file(fdiff.path)
-                finding_type = _map_commit_type(fdiff.path, config)
-                status_text = _status_label(fdiff.status)
-                scan_result.findings.append(
-                    Finding(
-                        path=fdiff.path,
-                        severity=severity,
-                        type=finding_type,
-                        message=(
-                            f"{status_text}: {fdiff.added_lines} added, "
-                            f"{fdiff.removed_lines} removed"
-                        ),
-                    )
+        # Run pre-commit checks
+        issues = run_checks(abs_path, repo_root, is_new=False)
+        for issue in issues:
+            scan_result.findings.append(
+                Finding(
+                    path=rel_path,
+                    severity=issue.severity,
+                    type=issue.category,
+                    message=issue.message,
+                    line_number=issue.line_number,
                 )
-                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            )
+            severity_counts[issue.severity] = (
+                severity_counts.get(issue.severity, 0) + 1
+            )
 
-        # Run pre-commit checks on the actual file (only for changed files)
-        abs_path = repo_root / fdiff.path
-        if abs_path.is_file():
-            issues = run_checks(abs_path, repo_root, is_new=fdiff.status == "A")
-            for issue in issues:
+    # 2. Scan untracked files
+    untracked = _get_untracked_files(repo_root)
+    for rel_path in untracked:
+        if _should_ignore(rel_path, config.ignore_paths):
+            continue
+        if rel_path in ("commitforge-report.html", "commitforge_report.html"):
+            continue
+
+        abs_path = repo_root / rel_path
+        if not abs_path.is_file():
+            continue
+
+        try:
+            size = abs_path.stat().st_size
+            if size > config.max_file_size_mb * 1024 * 1024:
                 scan_result.findings.append(
                     Finding(
-                        path=fdiff.path,
-                        severity=issue.severity,
-                        type=issue.category,
-                        message=issue.message,
-                        line_number=issue.line_number,
+                        path=rel_path,
+                        severity="critical",
+                        type="chore",
+                        message=f"Large file ({size / 1024 / 1024:.1f} MB) — consider git-lfs",
                     )
                 )
-                severity_counts[issue.severity] = (
-                    severity_counts.get(issue.severity, 0) + 1
+                severity_counts["critical"] = severity_counts.get("critical", 0) + 1
+                continue
+        except OSError:
+            continue
+
+        if abs_path.suffix.lower() in _BINARY_EXTS:
+            scan_result.findings.append(
+                Finding(
+                    path=rel_path,
+                    severity="critical",
+                    type="chore",
+                    message="Binary file detected — verify it belongs in the repo",
                 )
+            )
+            severity_counts["critical"] = severity_counts.get("critical", 0) + 1
+            continue
+
+        # Analyze new file content for functions
+        try:
+            content = abs_path.read_text(encoding="utf-8")
+            lines = content.splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        found_funcs = False
+        if abs_path.suffix.lower() == ".py":
+            import re
+            func_re = re.compile(r"^\s*(?:def|async def)\s+(\w+)\s*\(")
+            for line in lines:
+                match = func_re.match(line)
+                if match:
+                    scan_result.findings.append(
+                        Finding(
+                            path=rel_path,
+                            severity="info",
+                            type="feat",
+                            message=f"New function `{match.group(1)}()`",
+                        )
+                    )
+                    severity_counts["info"] = severity_counts.get("info", 0) + 1
+                    found_funcs = True
+
+        if not found_funcs:
+            line_count = len(lines)
+            scan_result.findings.append(
+                Finding(
+                    path=rel_path,
+                    severity="info",
+                    type="feat",
+                    message=f"New file ({line_count} lines)",
+                )
+            )
+            severity_counts["info"] = severity_counts.get("info", 0) + 1
+
+        # Run pre-commit checks on new files
+        issues = run_checks(abs_path, repo_root, is_new=True)
+        for issue in issues:
+            scan_result.findings.append(
+                Finding(
+                    path=rel_path,
+                    severity=issue.severity,
+                    type=issue.category,
+                    message=issue.message,
+                    line_number=issue.line_number,
+                )
+            )
+            severity_counts[issue.severity] = (
+                severity_counts.get(issue.severity, 0) + 1
+            )
 
     scan_result.thresholds_exceeded = _check_thresholds(
         severity_counts, config.severity_thresholds
     )
     return scan_result
+
+
+def _should_ignore(rel_path: str, ignore_paths: list[str]) -> bool:
+    """Check if a path matches any ignore pattern."""
+    import fnmatch
+
+    posix = rel_path.replace("\\", "/")
+    name = Path(posix).name
+    for pattern in ignore_paths:
+        if fnmatch.fnmatch(posix, pattern):
+            return True
+        if fnmatch.fnmatch(name, pattern):
+            return True
+        if posix.startswith(pattern.rstrip("/*") + "/"):
+            return True
+    return False
 
 
 def suggest_commit(
@@ -117,30 +301,23 @@ def suggest_commit(
     scope: str | None = None,
     breaking: bool = False,
 ) -> CommitSuggestion:
-    """Return a CommitSuggestion derived from scan results or defaults.
-
-    If scan_result has findings, tries to build a specific description
-    from the actual changes detected.
-    """
+    """Return a conventional CommitSuggestion from scan results."""
     if scan_result and scan_result.findings:
-        # Collect unique change types
         types: dict[str, int] = {}
-        descriptions: list[str] = []
         for f in scan_result.findings:
             types[f.type] = types.get(f.type, 0) + 1
-            if f.message and len(descriptions) < 3:
-                descriptions.append(f.message)
 
-        # Pick the most common type
         commit_type = max(types, key=types.get) if types else "chore"
 
-        # Build description from first few findings
-        if descriptions:
-            desc = "; ".join(descriptions[:2])
-            if len(desc) > 72:
-                desc = desc[:69] + "..."
-        else:
-            desc = "update repository"
+        # Count files changed
+        files_changed = len({f.path for f in scan_result.findings})
+        desc = f"update {files_changed} file{'s' if files_changed != 1 else ''}"
+
+        # Check for TODOs to mention
+        todos = [f for f in scan_result.findings if f.type == "todo"]
+        if todos:
+            desc = f"resolve TODO in {todos[0].path}"
+            commit_type = "fix"
     else:
         commit_type = "chore"
         desc = "update repository"
@@ -154,15 +331,9 @@ def suggest_commit(
 
 
 def get_checklist(scan_result: ScanResult) -> list[tuple[str, str, str]]:
-    """Extract actionable checklist items from scan results.
-
-    Returns:
-        List of (severity, location, message) tuples for issues
-        that should be addressed before committing.
-    """
+    """Extract actionable checklist items from scan results."""
     checklist: list[tuple[str, str, str]] = []
     for f in scan_result.findings:
-        # Only include actionable items (debug prints, secrets, missing tests, TODOs)
         if f.type in ("debug", "secret", "test", "todo"):
             location = ""
             if f.line_number > 0:
@@ -173,36 +344,8 @@ def get_checklist(scan_result: ScanResult) -> list[tuple[str, str, str]]:
     return checklist
 
 
-def _classify_change(change: "FileDiff", fdiff: "FileDiff") -> str:
-    """Assign severity based on the type of change detected.
-
-    Args:
-        change: The specific change from diff parsing.
-        fdiff: The file diff containing this change.
-
-    Returns:
-        Severity string: "critical", "warning", or "info".
-    """
-    # Removed functions/classes are potentially breaking
-    if change.change_type == "removed" and change.kind in ("function", "class"):
-        return "warning"
-
-    # Added functions without tests will be caught by check_test_coverage
-    if change.change_type == "added" and change.kind == "function":
-        return "info"
-
-    return "info"
-
-
 def _classify_file(rel: str) -> str:
-    """Assign severity based on file characteristics.
-
-    Args:
-        rel: Relative file path.
-
-    Returns:
-        Severity string: "critical", "warning", or "info".
-    """
+    """Assign severity based on file characteristics."""
     ext = Path(rel).suffix.lower()
     if ext in _BINARY_EXTS:
         return "critical"
