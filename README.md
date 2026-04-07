@@ -18,13 +18,9 @@ CommitForge eliminates that friction with a **100% offline, zero-config CLI** th
 ## Quick Start
 
 ```bash
-# Install
+# Download commitforge.exe from Releases
+# Or install via pip:
 pip install commitforge
-
-# Or download commitforge.exe from Releases
-```
-
-### One command. That's it.
 
 ```bash
 cd your-project
@@ -34,8 +30,8 @@ commitforge
 That's the entire workflow. It:
 1. Auto-detects your git root
 2. Scans tracked and untracked files
-3. Reads your actual diff — detects added/removed functions, classes, imports
-4. Runs pre-commit checks — debug prints, TODOs, secrets, missing tests
+3. Reads your actual diff detects added/removed functions, classes, imports
+4. Runs pre-commit checks debug prints, TODOs, secrets, missing tests
 5. Suggests a commit message based on what it found
 6. Opens an HTML report in your browser
 
@@ -44,17 +40,17 @@ That's the entire workflow. It:
 ```
 $ commitforge
 Files scanned: 29
-Changes found: 49
-Summary: 12 warning, 37 info
+Changes found: 28
+Summary: 6 warning, 22 info
 
 Suggested commit message:
-  feat(auth): Added function `validate_password()`; Added function `hash_token()`
+  fix: resolve TODO in DEMO.md
 
 Before you commit:
-  1. [WARNING] src/auth.py: No test file found — consider adding tests
-  2. [CRITICAL] src/debug.py: Debug print detected: `print("DEBUG:", x)`
+  1. [WARNING] DEMO.md:86: TODO: `echo '# TODO: implement this' >> app.py`
+  2. [WARNING] commitforge/tests/test_analyzer.py: Modified: 21 added, 5 removed
 
-Report: /path/to/your-project/commitforge-report.html
+Report: C:\Users\User\Desktop\Code4Ge\commitforge-report.html
 ```
 
 The HTML report opens automatically — shareable, readable, no setup needed.
@@ -74,20 +70,13 @@ The HTML report opens automatically — shareable, readable, no setup needed.
 | Secrets | Critical | Hardcoded passwords, API keys, tokens |
 | TODOs | Warning | `TODO`, `FIXME`, `HACK`, `XXX`, `BUG` comments |
 | Missing tests | Warning | New source files without a corresponding test file |
-| Long lines | Info | Lines over 120 characters |
 | Deprecated markers | Warning | Comments containing "deprecated", "legacy", "workaround" |
 | Large files | Critical | Files over the size limit (default 0.5 MB) |
 | Binary files | Critical | `.exe`, `.dll`, `.so`, etc. accidentally committed |
 
 ## Configuration (Optional)
 
-CommitForge works with zero config. If you want to customize behavior, run:
-
-```bash
-commitforge init
-```
-
-This creates `.commitforge.json`:
+CommitForge works with zero config. If you want to customize behavior, create a `.commitforge.json` in your repo root:
 
 ```json
 {
@@ -120,8 +109,7 @@ All keys are optional. Missing values merge with built-in defaults.
 ## Tech Details
 
 - Python 3.9+
-- One dependency: `typer` (CLI framework)
-- Everything else is stdlib
+- Zero runtime dependencies (the `.exe` is fully self-contained)
 - Type-checked with `mypy --strict`
 - Tested with `pytest` (90%+ coverage)
 - Works identically on Windows, macOS, Linux
@@ -129,7 +117,7 @@ All keys are optional. Missing values merge with built-in defaults.
 ## Dev Setup
 
 ```bash
-pip install pytest ruff mypy
+pip install pytest ruff mypy typer
 pytest commitforge/tests -v
 mypy --strict commitforge/
 ruff check commitforge/ tests/
