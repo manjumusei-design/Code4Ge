@@ -5,122 +5,102 @@ from __future__ import annotations
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List
 
-from commitforge.parser import DiffResult, FileChange
+from commitforge.types import Config, DiffResult, FileChange
 
 # Heuristics
-_COMMIT_TYPE_KEYWORDS: Dict[str, Sequence[str]] = {
-    "feat": ["add", "create", "introduce", "implement", "new"],
-    "fix": ["fix", "resolve", "patch", "correct", "bug"],
-    "docs": ["doc", "readme", "comment", "typo", "guide"],
-    "style": ["format", "whitespace", "lint", "indent", "style"],
-    "refactor": ["refactor", "restructure", "reorganize", "clean", "simplify"],
-    "perf": ["optimize", "speed", "performance", "cache", "lazy", "memoize"],
+_COMMIT_KEYWORDS: Dict[str, List[str]] = {
+    "fix": ["fix", "bug", "patch", "crash", "error", "fail"],
+    "docs": ["doc", "readme", "typo", "guide", "manual", "comment"],
+    "style": ["format", "whitespace", "lint", "indent", "prettier"],
+    "refactor": ["refactor", "restructure", "reorganize", "simplify"],
+    "perf": ["optimize", "speed", "performance", "cache", "lazy"],
     "test": ["test", "spec", "coverage", "assert", "unittest"],
-    "chore": ["update", "bump", "ignore", "config", "ci", "build", "deps"],
+    "chore": ["ignore", "ci", "build", "deps", "vendor", "bump"],
 }
 
-_SCOPE_HINTS: Dict[str, str] = {
-    "readme.md": "docs", "docs/": "docs", "tests/": "test",
-    "test/": "test", "ci/": "ci", ".github/": "ci",
-    "setup.py": "build", "pyproject.toml": "build",
-    "requirements.txt": "deps",
-}
-
-
-def generate_commit_suggestion(diff: DiffResult) -> Dict[str, str]:
-    """Return a conventional commit message based on the diff.
+def suggest_commit(result: DiffResult, config: Config) -> Dict[str, str]:
+    """Return a conventional commit dict from results and config
     
-    Returns ``{"type": str, "scope": str, "summary": str, "body": str}``.
-    """
-    if not diff.files:
-        return {"type": "chore", "scope": "", "summary": "no changes detected", "body": ""}
-
-    ctype = _infer_type(diff.files)
-    scope = _infer_scope(diff.files)
-    summary = _build_summary_line(diff.files)
-    body = _build_body(diff.files)
-    return {"type": ctype, "scope": scope, "summary": summary, "body": body}
+    I want it to return ``{"type", "scope", "summary", "body"}`` — fully deterministic."""
+    
+    if not result.files:
+        return {"type": "chore", "scope": "core",
+                "summary": "initial commit", "body": ""}
+    ctype = _infer_type(result.files)
+    scope = _infer_scope(result.files)
+    summary = _build_summary(result.files, ctype)
+    body = _build_body(result.files)
+    return {"type": ctype, "scope": scope,
+            "summary": summary, "body": body}
 
 
 def _infer_type(files: List[FileChange]) -> str:
-    """Pick the most likely conventional commit type from changed files."""
+    """Determine commit type from file paths and change keywords."""
     scores: Counter[str] = Counter()
     for fc in files:
-        text = (fc.path + " " + " ".join(fc.hunks)).lower()
-        for ctype, keywords in _COMMIT_TYPE_KEYWORDS.items():
-            for kw in keywords:
-                if kw in text:
-                    scores[ctype] += 1
-    if all(f.status == "D" for f in files):
-        scores["chore"] += 2
+        text = fc.path.lower()
+        for ctype, keywords in _COMMIT_KEYWORDS.items():
+            if any(kw in text for kw in keywords):
+                scores[ctype] += 1
+    if _is_source_heavy(files):
+        scores["feat"] += 2
+    if _is_config_only(files):
+        return "chore"
     if not scores:
-        return _type_by_extension(files)
+        return "refactor"
     return scores.most_common(1)[0][0]
 
 
-def _type_by_extension(files: List[FileChange]) -> str:
-    """Fallback: guess type from file extensions."""
-    if any(f.path.endswith((".md", ".rst", ".txt")) for f in files):
-        return "docs"
-    if any(f.path.endswith((".cfg", ".toml", ".ini", ".json", ".yaml", ".yml"))
-           for f in files):
-        return "chore"
-    return "feat"
+def _is_source_heavy(files: List[FileChange]) -> bool:
+    """Return true when >3 files live under src or new files exist"""
+    src_count = sum(1 for f in files if f.path.startswith("src/"))
+    added = sum(1 for f in files if f.status == "A")
+    return src_count >3 or added > 3
 
 
-def _infer_scope(files: List[FileChange]) -> Optional[str]:
-    """Extract an optional scope from common directory hints."""
+def _is_config_only(files: List[FileChange]) -> bool:
+    """Return True when all changes touch config and deps files"""
+    config_exts = {".cfg", ".toml", ".ini", ".json", ".yaml" ".yml" ".gitignore"}
+    config_names = {".gitignore", ".editorconfig", "Makefile", "Dockerfile"}
+    return all(
+        Path(f.path).suffix in config_exts or Path(f.path).name in config_names
+        for f in files
+    )
+
+
+def _infer_scope(files: List[FileChange]) -> str:
+    """Return a scope string from the most common top-level directory."""
+    dirs: Counter[str] = Counter()
     for fc in files:
-        for hint, scope in _SCOPE_HINTS.items():
-            if fc.path.startswith(hint) or fc.path.endswith(hint):
-                return scope
-    return ""
+        top = Path(fc.path).parts[0]
+        if top and not top.endswith((":\\", "/")):
+            dirs[top] += 1
+    if not dirs:
+        return "core"
+    return dirs.most_common(1)[0][0]
 
 
-def _build_summary_line(files: List[FileChange]) -> str:
+def _build_summary(files: List[FileChange], ctype: str) -> str:
     """Create a one-line summary under 72 characters."""
-    if len(files) == 1:
-        return _shorten(files[0].path, 60)
-    return f"Update {len(files)} files"
+    verb = {"feat": "add", "fix": "fix", "docs": "update docs",
+            "refactor": "refactor", "perf": "optimize",
+            "test": "add tests", "chore": "update"}.get(ctype, "update")
+    count = len(files)
+    candidate = "{} {} file{}".format(verb, count, "s" if count != 1 else "")
+    if len(candidate) <= 72:
+        return candidate
+    return candidate[:69] + "..."
 
 
-def _build_body(files: List[FileChange]) -> str:
-    """List changed files (max 10) with status labels."""
+def _build_body(files: List[FileChange], max_lines: int = 10) -> str:
+    """Return a bulleted list of changed files, truncated at *max_lines*."""
     lines: List[str] = []
-    for fc in files[:10]:
-        status_label = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}.get(
-            fc.status, "changed"
-        )
-        lines.append(f"- {status_label} `{fc.path}`")
-    if len(files) > 10:
-        lines.append(f"... and {len(files) - 10} more")
+    for fc in files[:max_lines]:
+        label = {"A": "added", "M": "modified", "D": "deleted",
+                 "R": "renamed"}.get(fc.status, "changed")
+        lines.append("- {}: {}".format(label, fc.path))
+    if len(files) > max_lines:
+        lines.append("- ... and {} more".format(len(files) - max_lines))
     return "\n".join(lines)
-
-
-def _shorten(text: str, max_len: int) -> str:
-    """Truncate *text* with ellipsis if it exceeds *max_len*."""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 3] + "..."
-
-
-def format_commit(commit: Dict[str, str]) -> str:
-    """Render a commit dict into a conventional commit string."""
-    prefix = f"{commit['type']}({commit['scope']})" if commit["scope"] else commit["type"]
-    header = f"{prefix}: {commit['summary']}"
-    if commit["body"]:
-        return f"{header}\n\n{commit['body']}"
-    return header
-
-
-def _extract_keywords_from_hunks(hunks: List[str]) -> List[str]:
-    """Return unique keywords found in diff hunk lines (unused helper)."""
-    found: List[str] = []
-    keyword_pattern = re.compile(r"\b(TODO|FIXME|BUG|HACK|XXX)\b", re.IGNORECASE)
-    for hunk in hunks:
-        for line in hunk.splitlines():
-            if line.startswith("+"):
-                found.extend(keyword_pattern.findall(line))
-    return list(dict.fromkeys(found))
