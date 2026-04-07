@@ -1,4 +1,4 @@
-"""Commit-level result cache"""
+"""Commit-level result cache for CommitForge."""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ _CACHE_FILE = ".commitforge_cache.json"
 
 
 def get_cache_key(repo_root: Path) -> Optional[str]:
-    """Return a SHA 3 - 256 of repo_root and the current heads commit cache """
+    """Return SHA3-256 of repo_root + current HEAD commit hash."""
     try:
         import subprocess
         head = subprocess.run(
             ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True, timeout=10
+            capture_output=True, text=True, check=True, timeout=10,
         ).stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         logger.debug("Cannot resolve HEAD for cache key.")
@@ -30,17 +30,17 @@ def get_cache_key(repo_root: Path) -> Optional[str]:
 
 
 def load_cache(repo_root: Path) -> Optional[Dict[str, Any]]:
-    """Read the .commitforge_cache.json and to return None or miss or stale data"""
+    """Read .commitforge_cache.json and then return None on miss or stale data."""
     cache_path = repo_root / _CACHE_FILE
     if not cache_path.is_file():
         return None
-    expected = get_cache_key (repo_root)
+    expected = get_cache_key(repo_root)
     if expected is None:
         return None
     try:
         with open(cache_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-    except (json.JSONDecodeError.OSError):
+    except (json.JSONDecodeError, OSError):
         return None
     return data if data.get("cache_key") == expected else None
 
@@ -65,8 +65,8 @@ def save_cache(repo_root: Path, data: Dict[str, Any]) -> None:
             os.unlink(tmp)
         except OSError:
             pass
-        
-        
+
+
 def clear_cache(repo_root: Path) -> None:
     """Safely delete the cache file if it exists."""
     cache_path = repo_root / _CACHE_FILE
