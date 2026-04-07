@@ -1,4 +1,4 @@
-"""CLI entry point with a subcommand routing for CommitForge."""
+"""CLI entry point with subcommand routing for CommitForge."""
 
 from __future__ import annotations
 
@@ -143,7 +143,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         logger.error("Not inside a git repository")
         return 1
     target = args.output or Path("stdout")
-    logger.info ("Report for %s → %s", repo, target)
+    logger.info ("Report for %s → jhjjhj%s", repo, target)
     if not args.quiet:
         print("Report written to {}".format(target))
     return 0
@@ -159,5 +159,3 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     if not args.quiet:
         print("Analysis complete.")
     return 0
-        
-    
