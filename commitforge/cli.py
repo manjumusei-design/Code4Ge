@@ -1,246 +1,142 @@
-"""CLI entry point with subcommand routing for CommitForge."""
+"""Typer-based CLI for commitforge."""
 
 from __future__ import annotations
 
-import argparse
-import logging
-import sys
 from pathlib import Path
-from typing import Optional, Sequence
 
-logger = logging.getLogger(__name__)
-FMT_CHOICES = ("text", "md", "html")
+import typer
 
+from commitforge.analyzer import analyze_changes
+from commitforge.config import create_default_config, load_config
+from commitforge.scanner import scan_repo
+from commitforge.utils import _log
+from commitforge.validator import validate_commit_message
 
-def build_parser() -> argparse.ArgumentParser:
-    """Construct the argument parser with all subcommands and global flags."""
-    parent = argparse.ArgumentParser(add_help=False)
-    parent.add_argument("--format", choices=FMT_CHOICES, default="text",
-                        help="Output format (default: text)")
-    parent.add_argument("--since", type=str, default=None,
-                        help="Analyse commits since ISO date")
-    parent.add_argument("--author", type=str, default=None,
-                        help="Filter commits by author")
-    parent.add_argument("--ignore", action="append", default=[],
-                        help="Ignore glob pattern (repeatable)")
-    parent.add_argument("--no-cache", action="store_true",
-                        help="Disable any caching")
-    
-    parser = argparse.ArgumentParser(
-        prog="commitforge",
-        description="Offline Git repo analyzer & conventional commit generator.",
-    )
-    parser.add_argument("-V", "--version", action="version",
-                        version="%(prog)s 1.0.0")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Enable debug logging")
-    parser.add_argument("-q", "--quiet", action="store_true",
-                        help="Suppress non-essential output")
-    parser.add_argument("--output", type=Path, default=None,
-                        help="Write report to file")
-    parser.add_argument("--repo", type=Path, default=None,
-                        help="Path to Git repository root")
+import logging
 
-    parent.add_argument("--quiet", action="store_true",
-                        help="Suppress non-essential output")
-
-    subs = parser.add_subparsers(dest="command", help="Available subcommands")
-    subs.add_parser("init", parents=[parent], help="Create .commitforge.json")
-    subs.add_parser("scan", parents=[parent], help="Suggest commit message")
-    subs.add_parser("health", parents=[parent], help="Scan code health")
-    subs.add_parser("report", parents=[parent], help="Generate MD/HTML report")
-    subs.add_parser("analyze", parents=[parent], help="Full analysis pipeline")
-    return parser
+app = typer.Typer(
+    name="commitforge",
+    help="Repository analysis and commit standardization tool.",
+    add_completion=False,
+)
 
 
+@app.command()
+def init(repo_root: Path = typer.Argument(
+    Path("."), help="Path to the repository root."
+)) -> None:
+    """Create a default .commitforge.json configuration file."""
+    if not repo_root.is_dir():
+        typer.echo(f"Error: '{repo_root}' is not a directory.", err=True)
+        raise typer.Exit(2)
+    create_default_config(repo_root)
+    typer.echo(f"Config created at: {repo_root / '.commitforge.json'}")
 
-def _setup_logging(verbose: bool, quiet: bool) -> None:
-    """Configure the root logger based on verbosity flag."""
-    if quiet:
-        level = logging.CRITICAL
-    elif verbose:
-        level = logging.DEBUG
+
+@app.command()
+def scan(
+    repo_root: Path = typer.Argument(
+        Path("."), help="Path to the repository root."
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show detailed findings."
+    ),
+) -> None:
+    """Scan the repository and print findings."""
+    config = load_config(repo_root)
+    scan_result = scan_repo(repo_root, config)
+    scan_result = analyze_changes(repo_root, config, scan_result)
+
+    if verbose:
+        typer.echo(f"Files scanned: {scan_result.files_scanned}")
+        for finding in scan_result.findings:
+            typer.echo(
+                f"  [{finding.severity.upper():8s}] {finding.path}: {finding.message}"
+            )
     else:
-        level = logging.INFO
-    logging.basicConfig(level=level,
-                        format="%(levelname)s: %(message)s",
-                        stream=sys.stderr)
+        typer.echo(
+            f"Scanned {scan_result.files_scanned} files, "
+            f"{len(scan_result.findings)} findings."
+        )
+
+    if scan_result.thresholds_exceeded:
+        typer.echo("WARNING: Severity thresholds exceeded.", err=True)
+        raise typer.Exit(1)
 
 
-def _resolve_repo(explicit: Optional[Path]) -> Optional[Path]:
-    """Return a path to the git repo root or None if not found."""
-    from commitforge.utils import detect_repo_root
-    if explicit and explicit.is_dir():
-        return explicit.resolve() if (explicit / ".git").exists() else None
-    if explicit:
-        resolved = explicit.parent.resolve()
-        return resolved if (resolved / ".git").exists() else None
-    return detect_repo_root(Path.cwd())
+@app.command()
+def suggest(
+    repo_root: Path = typer.Argument(
+        Path("."), help="Path to the repository root."
+    ),
+    scope: str | None = typer.Option(
+        None, "--scope", "-s", help="Commit scope (e.g., 'core', 'api')."
+    ),
+    breaking: bool = typer.Option(
+        False, "--breaking", "-b", help="Mark as a breaking change."
+    ),
+) -> None:
+    """Generate a conventional commit suggestion."""
+    config = load_config(repo_root)
+    scan_result = scan_repo(repo_root, config)
+    scan_result = analyze_changes(repo_root, config, scan_result)
+
+    if not scan_result.findings:
+        typer.echo("No changes detected to generate a suggestion from.")
+        return
+
+    types = {f.type for f in scan_result.findings}
+    commit_type = types.pop() if len(types) == 1 else "chore"
+    count = scan_result.files_scanned
+    suggestion = f"{commit_type}"
+    if scope:
+        suggestion += f"({scope})"
+    if breaking:
+        suggestion += "!"
+    suggestion += f": update {count} file{'s' if count != 1 else ''}"
+    typer.echo(suggestion)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Parse arguments, dispatch to subcommand, return exit code."""
-    try:
-        args = build_parser().parse_args(argv)
-    except SystemExit as exc:
-        return exc.code if isinstance(exc.code, int) else 2
-
-    _setup_logging(args.verbose, args.quiet)
-
-    dispatch = {
-        "init": _cmd_init,
-        "scan": _cmd_scan,
-        "health": _cmd_health,
-        "report": _cmd_report,
-        "analyze": _cmd_analyze,
-    }
-    fn = dispatch.get(getattr(args, "command", None))
-    if fn is None:
-        build_parser().print_help()
-        return 0
-    try:
-        return fn(args)
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user.")
-        return 130
-    
-    
-def _cmd_init(args: argparse.Namespace) -> int: 
-    """Handle the init subcommand"""
-    repo = _resolve_repo(getattr(args, "repo", None))
-    if repo is None:
-        logger.error("Not inside a git repo, you need to run 'git init' first")
-        return 1
-    logger.info("Config created at %s", repo / ".commitforge.json")
-    if not args.quiet:
-        print("Config created: {}".format(repo / ".commitforge.json"))
-    return 0
-    
-    
-def _cmd_scan(args: argparse.Namespace) -> int:
-    """Handle the scan subcommand."""
-    from commitforge.config import load_config
-    from commitforge.parser import parse_diff
-    from commitforge.generator import suggest_commit
-
-    repo = _resolve_repo(getattr(args, "repo", None))
-    if repo is None:
-        logger.error("Not inside a git repo; run 'git init' first.")
-        return 1
-    config = load_config(repo)
-    filters = {"since": args.since, "author": args.author, "ignore": args.ignore}
-    diff = parse_diff(repo, filters)
-    commit = suggest_commit(diff, config)
-    if not args.quiet:
-        print("Branch: {}".format(diff.branch or "working-tree"))
-        print("Files changed: {}".format(len(diff.files)))
-        print("Suggested: {}({}): {}".format(
-            commit["type"], commit["scope"], commit["summary"]))
-        if commit.get("body"):
-            print(commit["body"])
-    return 0
-    
-    
-def _cmd_health(args: argparse.Namespace) -> int:
-    """Handle the health subcommand."""
-    from commitforge.config import load_config
-    from commitforge.scanner import (
-        scan_large_files, scan_binaries, scan_todos_fixmes,
-        scan_missing_docstrings, scan_unused_imports,
-    )
-    from commitforge.report import render_terminal, write_output
-
-    repo = _resolve_repo(getattr(args, "repo", None))
-    if repo is None:
-        logger.error("Not inside a git repo; run 'git init' first.")
-        return 1
-    config = load_config(repo)
-    ignores = config.ignore_paths
-    all_issues = []
-    all_issues.extend(scan_large_files(repo, config))
-    all_issues.extend(scan_binaries(repo, ignores))
-    all_issues.extend(scan_todos_fixmes(repo, ignores))
-    all_issues.extend(scan_missing_docstrings(repo, ignores))
-    all_issues.extend(scan_unused_imports(repo, ignores))
-    fmt = getattr(args, "format", "text")
-    commit_stub = {"type": "health", "scope": "repo", "summary": "Health check", "body": ""}
-    if fmt == "md":
-        from commitforge.report import render_markdown
-        content = render_markdown(commit_stub, all_issues)
-    elif fmt == "html":
-        from commitforge.report import render_html
-        content = render_html(commit_stub, all_issues)
+@app.command()
+def validate(
+    message: str = typer.Argument(..., help="The commit message to validate."),
+    repo_root: Path = typer.Argument(
+        Path("."), help="Path to the repository root (for config)."
+    ),
+) -> None:
+    """Validate a commit message against Conventional Commit rules."""
+    config = load_config(repo_root)
+    is_valid, violations = validate_commit_message(message, config)
+    if is_valid:
+        typer.echo("Commit message is valid.")
     else:
-        render_terminal(commit_stub, all_issues)
-        content = ""
-    if content and args.output:
-        write_output(content, args.output)
-    return 0
-    
-    
-def _cmd_report(args: argparse.Namespace) -> int:
-    """Handle the report subcommand."""
-    from commitforge.config import load_config
-    from commitforge.parser import parse_diff
-    from commitforge.generator import suggest_commit
-    from commitforge.report import render_markdown, render_html, write_output
+        typer.echo("Commit message has errors:")
+        for v in violations:
+            typer.echo(f"  - {v}")
+        raise typer.Exit(1)
 
-    repo = _resolve_repo(getattr(args, "repo", None))
-    if repo is None:
-        logger.error("Not inside a git repository.")
-        return 1
-    config = load_config(repo)
-    filters = {"since": args.since, "author": args.author, "ignore": args.ignore}
-    diff = parse_diff(repo, filters)
-    commit = suggest_commit(diff, config)
-    fmt = getattr(args, "format", "text")
-    if fmt == "md":
-        content = render_markdown(commit, [])
-    elif fmt == "html":
-        content = render_html(commit, [])
-    else:
-        from commitforge.report import render_terminal
-        render_terminal(commit, [])
-        content = ""
-    if content:
-        write_output(content, args.output)
-    return 0
-    
-    
-def _cmd_analyze(args: argparse.Namespace) -> int:
-    """Handle the analyze subcommand (full pipeline)."""
-    from commitforge.config import load_config
-    from commitforge.parser import parse_diff
-    from commitforge.generator import suggest_commit
-    from commitforge.scanner import (
-        scan_large_files, scan_binaries, scan_todos_fixmes,
-        scan_missing_docstrings, scan_unused_imports,
-    )
-    from commitforge.report import render_terminal, render_markdown, render_html, write_output
 
-    repo = _resolve_repo(getattr(args, "repo", None))
-    if repo is None:
-        logger.error("Not inside a git repo.")
-        return 1
-    config = load_config(repo)
-    filters = {"since": args.since, "author": args.author, "ignore": args.ignore}
-    diff = parse_diff(repo, filters)
-    commit = suggest_commit(diff, config)
-    ignores = config.ignore_paths
-    issues = []
-    issues.extend(scan_large_files(repo, config))
-    issues.extend(scan_binaries(repo, ignores))
-    issues.extend(scan_todos_fixmes(repo, ignores))
-    issues.extend(scan_missing_docstrings(repo, ignores))
-    issues.extend(scan_unused_imports(repo, ignores))
-    fmt = getattr(args, "format", "text")
-    if fmt == "md":
-        content = render_markdown(commit, issues)
-    elif fmt == "html":
-        content = render_html(commit, issues)
-    else:
-        render_terminal(commit, issues)
-        content = ""
-    if content:
-        write_output(content, args.output)
-    return 0
+@app.command()
+def status(
+    repo_root: Path = typer.Argument(
+        Path("."), help="Path to the repository root."
+    ),
+) -> None:
+    """Show a quick summary of the current configuration and scan state."""
+    config = load_config(repo_root)
+    typer.echo("=== CommitForge Status ===")
+    typer.echo(f"Ignored paths: {len(config.ignore_paths)}")
+    typer.echo(f"Max file size: {config.max_file_size_mb} MB")
+    typer.echo(f"Severity thresholds: {config.severity_thresholds}")
+    typer.echo(f"Commit mappings: {len(config.commit_mappings)} types")
+    scan_result = scan_repo(repo_root, config)
+    typer.echo(f"Files scanned: {scan_result.files_scanned}")
+
+
+def main() -> None:
+    """Entry point for the CLI."""
+    app()
+
+
+if __name__ == "__main__":
+    main()

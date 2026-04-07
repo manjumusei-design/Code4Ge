@@ -5,10 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "commitforge"
 version = "1.0.0"
-description = "Tired of writing vague commit messages? CommitForge parses your actual changes, infers the right conventional commit type, and scans your repo for things you shouldn't be shipping like binary blobs, forgotten TODOs, undocumented functions, and dead imports. All in one command with zero dependencies, no network calls, and no pip install required."
+description = "Repository analysis and commit standardization tool"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.8"
+requires-python = ">=3.9"
+dependencies = ["typer>=0.9.0"]
 
 [project.scripts]
 commitforge = "commitforge.cli:main"
@@ -17,5 +18,13 @@ commitforge = "commitforge.cli:main"
 include = ["commitforge*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["commitforge/tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 88
+
+[tool.mypy]
+strict = true
+python_version = "3.9"
