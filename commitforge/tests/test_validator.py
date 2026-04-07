@@ -55,3 +55,34 @@ class TestValidateCommitMessage:
         valid, violations = validate_commit_message("build: add CI", config)
         assert valid is False
         assert any("not in configured" in v for v in violations)
+
+    def test_multiline_body_valid(self) -> None:
+        """Valid commit with blank line separator before body."""
+        config = Config(commit_mappings={
+            "test": "test", "docs": "docs", "style": "style",
+            "refactor": "refactor", "perf": "perf", "chore": "chore",
+            "feat": "feat", "fix": "fix",
+        })
+        msg = "feat(core): add feature\n\nThis is the body text."
+        valid, violations = validate_commit_message(msg, config)
+        assert valid is True
+
+    def test_multiline_body_invalid_no_blank_line(self) -> None:
+        """Invalid commit: no blank line before body."""
+        config = Config()
+        msg = "feat(core): add feature\nThis is the body text."
+        valid, violations = validate_commit_message(msg, config)
+        assert valid is False
+        assert any("Second line must be blank" in v for v in violations)
+
+    def test_empty_message(self) -> None:
+        config = Config()
+        valid, violations = validate_commit_message("", config)
+        assert valid is False
+        assert any("must not be empty" in v for v in violations)
+
+    def test_whitespace_only_message(self) -> None:
+        config = Config()
+        valid, violations = validate_commit_message("   ", config)
+        assert valid is False
+        assert any("must not be empty" in v for v in violations)

@@ -25,6 +25,8 @@ class Config:
     )
     commit_mappings: dict[str, str] = field(
         default_factory=lambda: {
+            "feat": "feat",
+            "fix": "fix",
             "test": "test",
             "docs": "docs",
             "style": "style",
@@ -43,6 +45,7 @@ class Finding:
     severity: str  # "info", "warning", "critical"
     type: str
     message: str
+    line_number: int = 0
 
 
 @dataclass
@@ -62,3 +65,24 @@ class CommitSuggestion:
     scope: str | None
     description: str
     breaking: bool = False
+
+    def __str__(self) -> str:
+        """Return the formatted conventional commit message."""
+        result = self.type
+        if self.scope:
+            result += f"({self.scope})"
+        if self.breaking:
+            result += "!"
+        result += f": {self.description}"
+        return result
+
+
+@dataclass(frozen=True)
+class CheckIssue:
+    """A single issue found by a pre-commit check."""
+
+    severity: str  # "critical", "warning", "info"
+    category: str  # "debug", "todo", "secret", "style", "test"
+    message: str
+    line_number: int = 0
+    line_content: str = ""
