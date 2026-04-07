@@ -46,3 +46,17 @@ class TestScanRepo:
         with mock_git_ls_files(""):
             result = scan_repo(tmp_repo, Config())
         assert result.files_scanned == 0
+
+    def test_symlink_handling(self, tmp_repo: Path, mock_git_ls_files) -> None:
+        """Symlinks to files within size limit should be counted."""
+        target = tmp_repo / "real_file.py"
+        target.write_text("x = 1")
+        link = tmp_repo / "link.py"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks not supported on this platform")
+        with mock_git_ls_files("real_file.py\nlink.py\n"):
+            result = scan_repo(tmp_repo, Config())
+        # Both the real file and the symlink should be counted
+        assert result.files_scanned == 2

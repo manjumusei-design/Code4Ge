@@ -114,3 +114,18 @@ class TestHelpers:
 
     def test_coerce_float_bool_guard(self) -> None:
         assert _coerce_float(True, 0.5, 0.01, 1024.0) == 0.5
+
+    def test_deep_merge_conflicts(self) -> None:
+        """When override has a non-dict value for a dict key, override wins."""
+        base = {"a": {"b": 1, "c": 2}}
+        override = {"a": "replaced"}
+        result = _deep_merge(base, override)
+        assert result["a"] == "replaced"
+
+    def test_deep_merge_preserves_base_keys(self) -> None:
+        """Keys only in base should be preserved."""
+        base = {"x": 1, "y": {"z": 10}}
+        override = {"y": {"w": 20}}
+        result = _deep_merge(base, override)
+        assert result["x"] == 1
+        assert result["y"] == {"z": 10, "w": 20}

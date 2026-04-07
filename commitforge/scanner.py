@@ -1,4 +1,4 @@
-"""Git-aware file discovery, ignore/size filtering."""
+"""Git-aware file discovery, as well as ignore/size filtering."""
 
 from __future__ import annotations
 

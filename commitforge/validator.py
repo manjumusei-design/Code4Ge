@@ -22,11 +22,12 @@ def validate_commit_message(
     """
     violations: List[str] = []
     lines = message.splitlines()
-    header = lines[0]
 
-    if not header.strip():
+    if not lines or not lines[0].strip():
         violations.append("Commit header must not be empty.")
         return False, violations
+
+    header = lines[0]
 
     if not _COMMIT_RE.match(header):
         violations.append(

@@ -17,6 +17,8 @@ _DEFAULTS: Dict[str, Any] = {
     "max_file_size_mb": 0.5,
     "severity_thresholds": {"warning": 3, "critical": 1},
     "commit_mappings": {
+        "feat": "feat",
+        "fix": "fix",
         "test": "test",
         "docs": "docs",
         "style": "style",

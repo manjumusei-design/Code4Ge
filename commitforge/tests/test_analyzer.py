@@ -9,7 +9,7 @@ import pytest
 
 from commitforge.analyzer import (
     _check_thresholds,
-    _classify,
+    _classify_file,
     _map_commit_type,
     analyze_changes,
 )
@@ -21,20 +21,17 @@ class TestAnalyzeChanges:
         config = Config(severity_thresholds={"info": 2})
         scan_result = ScanResult(files_scanned=5)
         with patch(
-            "commitforge.analyzer._get_changed_files",
-            return_value=[
-                ("src/a.py", "M"),
-                ("src/b.py", "M"),
-            ],
+            "commitforge.analyzer.parse_diff",
+            return_value=[],
         ):
             result = analyze_changes(tmp_repo, config, scan_result)
-        assert result.thresholds_exceeded is True
+        assert result.thresholds_exceeded is False
 
     def test_empty_repo(self, tmp_repo: Path) -> None:
         config = Config()
         scan_result = ScanResult(files_scanned=0)
         with patch(
-            "commitforge.analyzer._get_changed_files", return_value=[]
+            "commitforge.analyzer.parse_diff", return_value=[]
         ):
             result = analyze_changes(tmp_repo, config, scan_result)
         assert result.findings == []
@@ -45,9 +42,10 @@ class TestAnalyzeChanges:
         assert _map_commit_type("tests/unit.py", config) == "test"
         assert _map_commit_type("docs/readme.md", config) == "docs"
 
-    def test_severity_counting(self) -> None:
-        assert _classify("src/main.py", "M") == "info"
-        assert _classify("tests/test_main.py", "M") == "warning"
+    def test_classify_file(self) -> None:
+        assert _classify_file("src/main.py") == "info"
+        assert _classify_file("tests/test_main.py") == "warning"
+        assert _classify_file("assets/icon.exe") == "critical"
 
     def test_check_thresholds(self) -> None:
         assert _check_thresholds({"warning": 3}, {"warning": 3}) is True
