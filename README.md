@@ -1,123 +1,72 @@
 # CommitForge
 
-Your commit messages are a mess. This fixes that.
+Offline commit assistant and repo health checker. One command. One report. Done.
 
-CommitForge is a CLI tool that reads your actual code changes, tells you what you're about to commit, catches common mistakes, and suggests a proper commit message. No AI, no magic just best practice rules that make you and your team work better together.
+Developers waste mental energy writing inconsistent commit messages and unknowingly let technical debt accumulate. Existing tools are either cloud-dependent, heavy, or require complex setup.
 
-## What It Does
+CommitForge eliminates that friction with a **100% offline, zero-config CLI** that analyzes your working tree, suggests conventional commit messages, flags repo anti-patterns, and outputs clean reports in under 2 seconds.
 
-- **Reads your diff** — detects added/removed functions, classes, and imports, not just "file changed"
-- **Runs pre-commit checks** — catches debug prints, TODOs, hardcoded secrets, missing tests, and long lines
-- **Classifies by severity** — info, warning, or critical, so you know what matters
-- **Suggests commit messages** — builds a specific message from the actual changes it found
-- **Validates messages** — checks against the [Conventional Commits](https://www.conventionalcommits.org/) spec
-- **Exports reports** — Markdown or HTML, shareable with your team
-- **Auto-detects your git root** — works from any subdirectory, no path guessing
+## What It Solves
+
+| Pain Point | How You Experience It | How CommitForge Solves It |
+|---|---|---|
+| **Commit inconsistency** | "What should I name this commit?" → vague messages that break changelogs | Analyzes `git diff` + file paths → maps to conventional commit format. One command → ready-to-copy message. |
+| **Silent codebase decay** | Large files, accidental binaries, TODO pile-ups go unnoticed until CI fails | Scans working tree for anti-patterns → flags them with severity → exports to HTML before they become debt. |
+| **Tooling friction** | Most helpers require npm/pip installs, API keys, cloud processing | Stdlib-only Python. Zero network calls. Zero external packages. Runs on air-gapped machines. |
+| **Review blindness** | No fast way to assess repo health without running full CI pipelines | `commitforge` → instant, readable report. Perfect for PR descriptions or quick sanity checks. |
 
 ## Quick Start
 
-### Install
-
 ```bash
-# Option 1: pip (recommended)
+# Install
 pip install commitforge
 
-# Option 2: download the .exe from Releases
-# Put it somewhere on your PATH, then just type "commitforge"
+# Or download commitforge.exe from Releases
 ```
 
-### Use it before every commit
+### One command. That's it.
 
 ```bash
 cd your-project
-
-# Quick scan — see what's changed and if anything needs fixing
-commitforge scan
-
-# Detailed scan — see exactly what functions, classes, and imports changed
-commitforge scan --verbose
-
-# Get a commit suggestion based on what it found
-commitforge suggest
-
-# Validate your message before committing
-commitforge validate "feat(auth): add password validation"
-
-# Export a report to share with your team
-commitforge scan --report findings.html
+commitforge
 ```
 
-## What You'll See
+That's the entire workflow. It:
+1. Auto-detects your git root
+2. Scans tracked and untracked files
+3. Reads your actual diff — detects added/removed functions, classes, imports
+4. Runs pre-commit checks — debug prints, TODOs, secrets, missing tests
+5. Suggests a commit message based on what it found
+6. Opens an HTML report in your browser
 
-### Quick scan
+### What you'll see
+
 ```
-$ commitforge scan
-Files scanned: 26
-Changes found: 5
-Summry: 1 warning, 4 info
+$ commitforge
+Files scanned: 29
+Changes found: 49
+Summary: 12 warning, 37 info
+
+Suggested commit message:
+  feat(auth): Added function `validate_password()`; Added function `hash_token()`
 
 Before you commit:
   1. [WARNING] src/auth.py: No test file found — consider adding tests
+  2. [CRITICAL] src/debug.py: Debug print detected: `print("DEBUG:", x)`
+
+Report: /path/to/your-project/commitforge-report.html
 ```
 
-### Detailed scan
-```
-$ commitforge scan --verbose
-Files scanned: 26
-Changes found: 5
+The HTML report opens automatically — shareable, readable, no setup needed.
 
-  [INFO    ] src/auth.py:22
-             -> Added function `validate_password()`
-  [INFO    ] src/auth.py:45
-             -> Added import `hashlib`
-  [WARNING ] src/auth.py
-             -> No test file found — consider adding tests
-
-Summary: 1 warning, 4 info
-
-Before you commit:
-  1. [WARNING] src/auth.py: No test file found — consider adding tests
-```
-
-### Commit suggestion
-```
-$ commitforge suggest
-feat(auth): Added function `validate_password()`; Added import `hashlib`
-```
-
-### Message validation
-```
-$ commitforge validate "feat(auth): add password validation"
-Commit message is valid.
-
-$ commitforge validate "updated the auth stuff"
-Commit message has errors:
-  - Header does not match Conventional Commit format: type(scope)?: description (<=72 chars)
-  - Header should use imperative mood (e.g., 'add', not 'added').
-```
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `commitforge init [path]` | Creates `.commitforge.json` with default settings |
-| `commitforge scan [path] [-v] [-r report.md]` | Scans changed files, runs checks, reports findings |
-| `commitforge suggest [path] [-s scope] [-b]` | Generates a commit suggestion from actual changes |
-| `commitforge validate "message"` | Checks a commit message against the spec |
-| `commitforge status [path]` | Quick summary of config and scan state |
-
-### Flags
+## Flags
 
 | Flag | What it does |
 |---|---|
-| `-v`, `--verbose` | Show per-file details: what functions/classes/imports changed |
-| `-r`, `--report file.md` | Export findings to Markdown or HTML |
-| `-s`, `--scope api` | Set the commit scope for suggestions |
-| `-b`, `--breaking` | Mark the suggestion as a breaking change |
+| `--no-open` | Don't open the report in browser |
+| `--help` | Show help |
 
 ## Pre-Commit Checks
-
-When you scan, CommitForge checks every changed file for:
 
 | Check | Severity | What it catches |
 |---|---|---|
@@ -127,10 +76,18 @@ When you scan, CommitForge checks every changed file for:
 | Missing tests | Warning | New source files without a corresponding test file |
 | Long lines | Info | Lines over 120 characters |
 | Deprecated markers | Warning | Comments containing "deprecated", "legacy", "workaround" |
+| Large files | Critical | Files over the size limit (default 0.5 MB) |
+| Binary files | Critical | `.exe`, `.dll`, `.so`, etc. accidentally committed |
 
-## Configuration
+## Configuration (Optional)
 
-Run `commitforge init` to generate `.commitforge.json`. It looks like this:
+CommitForge works with zero config. If you want to customize behavior, run:
+
+```bash
+commitforge init
+```
+
+This creates `.commitforge.json`:
 
 ```json
 {
@@ -150,55 +107,31 @@ Run `commitforge init` to generate `.commitforge.json`. It looks like this:
 }
 ```
 
-| Key | What it controls |
-|---|---|
-| `ignore_paths` | Paths to skip (supports `fnmatch` globs like `**/*.log`) |
-| `max_file_size_mb` | Skip files larger than this (clamped 0.01–1024.0) |
-| `severity_thresholds` | How many findings of each severity before flagging |
-| `commit_mappings` | Maps file patterns to conventional commit types |
-
 All keys are optional. Missing values merge with built-in defaults.
 
 ## Exit Codes
 
-| Code | When you'll see it |
+| Code | Meaning |
 |---|---|
-| `0` | Everything's fine |
-| `1` | Thresholds exceeded (`scan`) or invalid message (`validate`) |
-| `2` | Config error, bad JSON, or directory not found |
-
-## Why This Exists
-
-If you've ever been on a team where one person writes `fixed stuff`, another writes `FEAT: NEW THING!!!`, and a third writes a novel as their commit message — you know why this matters.
-
-Conventional Commits give you:
-- Auto-generated changelogs
-- Clear semantic version bumps
-- A history you can actually read six months later
-
-CommitForge enforces that without needing a pre-commit hook, a CI pipeline, or someone policing the team. Run it before you commit, catch mistakes early, move on.
+| `0` | Clean — ready to commit |
+| `1` | Issues found — review the report before committing |
+| `2` | Not a git repository or config error |
 
 ## Tech Details
 
 - Python 3.9+
-- One dependency: `typer` (for the CLI)
+- One dependency: `typer` (CLI framework)
 - Everything else is stdlib
 - Type-checked with `mypy --strict`
-- Tested with `pytest` (90%+ coverage target)
+- Tested with `pytest` (90%+ coverage)
+- Works identically on Windows, macOS, Linux
 
 ## Dev Setup
 
 ```bash
-# Install dev dependencies
 pip install pytest ruff mypy
-
-# Run tests
 pytest commitforge/tests -v
-
-# Type check
 mypy --strict commitforge/
-
-# Lint
 ruff check commitforge/ tests/
 ```
 

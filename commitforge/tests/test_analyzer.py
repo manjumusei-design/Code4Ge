@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -18,20 +18,36 @@ from commitforge.types import Config, ScanResult
 
 class TestAnalyzeChanges:
     def test_threshold_evaluation(self, tmp_repo: Path) -> None:
-        config = Config(severity_thresholds={"info": 2})
+        config = Config(severity_thresholds={"info": 1})
         scan_result = ScanResult(files_scanned=5)
+        src_dir = tmp_repo / "src"
+        src_dir.mkdir()
+        (src_dir / "a.py").write_text("# test")
         with patch(
-            "commitforge.analyzer.parse_diff",
+            "commitforge.analyzer._get_diff_stats",
+            return_value={"src/a.py": {"added": 10, "removed": 5}},
+        ), patch(
+            "commitforge.analyzer._extract_functions_from_diff",
+            return_value={},
+        ), patch(
+            "commitforge.analyzer._get_untracked_files",
             return_value=[],
         ):
             result = analyze_changes(tmp_repo, config, scan_result)
-        assert result.thresholds_exceeded is False
+        assert result.thresholds_exceeded is True
 
     def test_empty_repo(self, tmp_repo: Path) -> None:
         config = Config()
         scan_result = ScanResult(files_scanned=0)
         with patch(
-            "commitforge.analyzer.parse_diff", return_value=[]
+            "commitforge.analyzer._get_diff_stats",
+            return_value={},
+        ), patch(
+            "commitforge.analyzer._extract_functions_from_diff",
+            return_value={},
+        ), patch(
+            "commitforge.analyzer._get_untracked_files",
+            return_value=[],
         ):
             result = analyze_changes(tmp_repo, config, scan_result)
         assert result.findings == []

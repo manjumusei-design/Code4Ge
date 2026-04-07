@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
 
-# Patterns that indicate potential issues that are usually indicative of bad behaviour imo
 _DEBUG_PRINT_RE = re.compile(
     r"""(?x)
     ^\s*(?:
@@ -26,7 +25,6 @@ _SECRET_RE = re.compile(
 _HARDCODED_IP_RE = re.compile(
     r"""(?:https?://|ftp://)(?:\d{1,3}\.){3}\d{1,3}""",
 )
-_LONG_LINE_RE = re.compile(r".{120,}")
 _DEPRECATED_RE = re.compile(
     r"\b(deprecated|obsolete|legacy|workaround|temporary)\b",
     re.IGNORECASE,
@@ -37,15 +35,15 @@ _DEPRECATED_RE = re.compile(
 class CheckIssue:
     """A single issue found by a pre-commit check."""
 
-    severity: str  # "critical", "warning", "info"
-    category: str  # "debug", "todo", "secret", "style", "test"
+    severity: str
+    category: str
     message: str
     line_number: int = 0
     line_content: str = ""
 
 
 def run_checks(file_path: Path, repo_root: Path, is_new: bool = False) -> List[CheckIssue]:
-    """Run all pre-commit checks on a single file.
+    """Run pre-commit checks on a single file.
 
     Args:
         file_path: Absolute path to the file.
@@ -67,10 +65,8 @@ def run_checks(file_path: Path, repo_root: Path, is_new: bool = False) -> List[C
     issues.extend(_check_debug_prints(lines, file_path))
     issues.extend(_check_todos(lines, file_path))
     issues.extend(_check_secrets(lines, file_path))
-    issues.extend(_check_long_lines(lines, file_path))
     issues.extend(_check_deprecated_comments(lines, file_path))
 
-    # Test coverage check only for new source files
     if is_new and _is_source_file(file_path):
         issues.extend(_check_test_coverage(file_path, repo_root))
 
@@ -78,19 +74,10 @@ def run_checks(file_path: Path, repo_root: Path, is_new: bool = False) -> List[C
 
 
 def _check_debug_prints(lines: List[str], file_path: Path) -> List[CheckIssue]:
-    """Check for debug print statements.
-
-    Args:
-        lines: File content split into lines.
-        file_path: Path to the file.
-
-    Returns:
-        List of CheckIssue for each debug print found.
-    """
+    """Check for debug print statements."""
     issues: List[CheckIssue] = []
     for i, line in enumerate(lines, 1):
         if _DEBUG_PRINT_RE.search(line):
-            # Skip if it's in a comment or string literal that looks intentional
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
@@ -98,7 +85,7 @@ def _check_debug_prints(lines: List[str], file_path: Path) -> List[CheckIssue]:
                 CheckIssue(
                     severity="critical",
                     category="debug",
-                    message=f"Debug print detected: `{stripped.strip()[:60]}`",
+                    message=f"Debug print detected: `{stripped[:60]}`",
                     line_number=i,
                     line_content=stripped,
                 )
@@ -107,15 +94,7 @@ def _check_debug_prints(lines: List[str], file_path: Path) -> List[CheckIssue]:
 
 
 def _check_todos(lines: List[str], file_path: Path) -> List[CheckIssue]:
-    """Check for TODO/FIXME/HACK comments.
-
-    Args:
-        lines: File content split into lines.
-        file_path: Path to the file.
-
-    Returns:
-        List of CheckIssue for each TODO-style comment.
-    """
+    """Check for TODO/FIXME/HACK comments."""
     issues: List[CheckIssue] = []
     for i, line in enumerate(lines, 1):
         match = _TODO_RE.search(line)
@@ -133,15 +112,7 @@ def _check_todos(lines: List[str], file_path: Path) -> List[CheckIssue]:
 
 
 def _check_secrets(lines: List[str], file_path: Path) -> List[CheckIssue]:
-    """Check for hardcoded secrets and credentials.
-
-    Args:
-        lines: File content split into lines.
-        file_path: Path to the file.
-
-    Returns:
-        List of CheckIssue for each potential secret found.
-    """
+    """Check for hardcoded secrets and credentials."""
     issues: List[CheckIssue] = []
     for i, line in enumerate(lines, 1):
         if _SECRET_RE.search(line):
@@ -167,41 +138,8 @@ def _check_secrets(lines: List[str], file_path: Path) -> List[CheckIssue]:
     return issues
 
 
-def _check_long_lines(lines: List[str], file_path: Path) -> List[CheckIssue]:
-    """Check for lines exceeding 120 characters.
-
-    Args:
-        lines: File content split into lines.
-        file_path: Path to the file.
-
-    Returns:
-        List of CheckIssue for each long line.
-    """
-    issues: List[CheckIssue] = []
-    for i, line in enumerate(lines, 1):
-        if _LONG_LINE_RE.match(line):
-            issues.append(
-                CheckIssue(
-                    severity="info",
-                    category="style",
-                    message=f"Line too long ({len(line)} chars, max 120)",
-                    line_number=i,
-                    line_content="",
-                )
-            )
-    return issues
-
-
 def _check_deprecated_comments(lines: List[str], file_path: Path) -> List[CheckIssue]:
-    """Check for deprecated/legacy/workaround comments.
-
-    Args:
-        lines: File content split into lines.
-        file_path: Path to the file.
-
-    Returns:
-        List of CheckIssue for each deprecated comment.
-    """
+    """Check for deprecated/legacy/workaround comments."""
     issues: List[CheckIssue] = []
     for i, line in enumerate(lines, 1):
         if _DEPRECATED_RE.search(line):
@@ -220,23 +158,13 @@ def _check_deprecated_comments(lines: List[str], file_path: Path) -> List[CheckI
 def _check_test_coverage(
     file_path: Path, repo_root: Path
 ) -> List[CheckIssue]:
-    """Check if a source file has a corresponding test file.
-
-    Args:
-        file_path: Absolute path to the source file.
-        repo_root: Absolute path to the repository root.
-
-    Returns:
-        List with one CheckIssue if no test file found.
-    """
+    """Check if a new source file has a corresponding test file."""
     rel = file_path.relative_to(repo_root)
     rel_str = str(rel).replace("\\", "/")
 
-    # Skip if already a test file
     if _is_test_file(rel_str):
         return []
 
-    # Look for test files
     test_patterns = [
         repo_root / "tests" / f"test_{file_path.name}",
         repo_root / "tests" / f"{file_path.stem}_test.py",
@@ -249,7 +177,6 @@ def _check_test_coverage(
         if pattern.exists():
             return []
 
-    # Also check for any test file containing the module name
     test_dirs = [repo_root / "tests", repo_root / "test"]
     for test_dir in test_dirs:
         if test_dir.is_dir():
@@ -269,27 +196,13 @@ def _check_test_coverage(
 
 
 def _is_source_file(file_path: Path) -> bool:
-    """Check if a file is a source code file.
-
-    Args:
-        file_path: Path to check.
-
-    Returns:
-        True if the file is a source code file.
-    """
+    """Check if a file is a source code file."""
     source_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs", ".c", ".cpp"}
     return file_path.suffix.lower() in source_exts
 
 
 def _is_test_file(rel_path: str) -> bool:
-    """Check if a relative path looks like a test file.
-
-    Args:
-        rel_path: Relative path string (POSIX style).
-
-    Returns:
-        True if the path appears to be a test file.
-    """
+    """Check if a relative path looks like a test file."""
     lower = rel_path.lower()
     return (
         "test_" in lower
@@ -300,14 +213,7 @@ def _is_test_file(rel_path: str) -> bool:
 
 
 def summarize_issues(issues: List[CheckIssue]) -> List[Tuple[str, str, str]]:
-    """Format check issues into a summary list.
-
-    Args:
-        issues: List of CheckIssue objects.
-
-    Returns:
-        List of (severity, location, message) tuples.
-    """
+    """Format check issues into a summary list."""
     result: List[Tuple[str, str, str]] = []
     for issue in issues:
         location = ""
