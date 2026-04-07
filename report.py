@@ -1,118 +1,171 @@
-"""Renders CommitForge findings to terminal (ANSI), Markdown, or HTML."""
+"""Report rendering for CommitForge."""
 
 from __future__ import annotations
 
-import html as html_mod
+import html
 import logging
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from commitforge.types import Issue
+from commitforge.utils import get_terminal_size
+
 logger = logging.getLogger(__name__)
 
-FORMAT_TERMINAL = "terminal"
-FORMAT_MARKDOWN = "markdown"
-FORMAT_HTML = "html"
-
-_SEVERITY_ICONS = {"critical": "🔴", "warning": "🟡", "info": "🟢"}
-_COLORS = {"reset": "\033[0m", "bold": "\033[1m", "red": "\033[91m",
-           "yellow": "\033[93m", "green": "\033[92m", "cyan": "\033[96m",
-           "gray": "\033[90m"}
+_SEV_COLORS = {"critical": "\033[31m", "warning": "\033[33m", "info": "\033[32m"}
+_RESET = "\033[0m"
+_BOLD = "\033[1m"
 
 
-def render_terminal(
-    commit: Dict[str, str], issues: List[Dict[str, Any]], branch: str
-) -> None:
-    """Print a colored report to stdout with severity emoji icons."""
-    from commitforge.generator import format_commit
-
-    _p(_COLORS["bold"] + "=== CommitForge ===" + _COLORS["reset"])
-    _p(_COLORS["cyan"] + "Suggested commit:" + _COLORS["reset"])
-    for line in format_commit(commit).splitlines():
-        _p(f"  {line}")
-    _p("")
-    _p(_COLORS["cyan"] + f"Branch: {branch}" + _COLORS["reset"])
-    _summary = _count_severities(issues)
-    for sev in ("critical", "warning", "info"):
-        icon = _SEVERITY_ICONS[sev]
-        _p(f"  {icon} {sev}: {_summary.get(sev, 0)}")
-    if issues:
-        _p("")
-        for issue in issues[:20]:
-            icon = _SEVERITY_ICONS.get(issue.get("severity", "info"), "🟢")
-            line_info = f":{issue['line']}" if issue.get("line") else ""
-            _p(f"  {icon} [{issue['severity']}] {issue['file']}{line_info} -- {issue['message']}")
-        if len(issues) > 20:
-            _p(_COLORS["gray"] + f"  ... and {len(issues) - 20} more" + _COLORS["reset"])
-
-
-def render_markdown(commit: Dict[str, str], issues: List[Dict[str, Any]], branch: str) -> str:
-    """Return a GitHub-flavored Markdown report."""
-    from commitforge.generator import format_commit
-
-    lines = ["# CommitForge Report\n",
-             f"**Branch:** `{branch}`", f"**Issues:** {len(issues)}\n",
-             "## Suggested Commit\n```", format_commit(commit), "```\n"]
-    if issues:
-        lines += ["| File | Rule | Severity | Message | Line |",
-                   "|------|------|----------|---------|------|"]
-        for iss in issues:
-            lines.append(f"| {iss['file']} | {iss['rule']} | {iss['severity']} "
-                         f"| {iss['message']} | {iss.get('line') or '-'} |")
-    return "\n".join(lines) + "\n"
-
-
-def render_html(commit: Dict[str, str], issues: List[Dict[str, Any]], branch: str) -> str:
-    """Return a self-contained HTML page with inline CSS."""
-    from commitforge.generator import format_commit
-
-    esc = html_mod.escape
-    commit_html = esc(format_commit(commit))
-    rows = ""
+def render_terminal(commit: Dict[str, str],
+                    issues: List[Issue],
+                    width: int = 0) -> None:
+    """Print a coloured, width-adapted report to stdout."""
+    cols = width or get_terminal_size()[0]
+    print("{}=== CommitForge ==={}".format(_BOLD, _RESET))
+    header = "{}({}){}: {}".format(
+        commit["type"], commit["scope"], _RESET, commit["summary"])
+    print("  {}".format(_truncate(header, cols - 2)))
+    if commit.get("body"):
+        for line in commit["body"].splitlines():
+            print("  {}".format(_truncate(line, cols - 2)))
+    print("")
+    if not issues:
+        print("  No issues found.")
+        return
+    counts = _count_severities(issues)
+    parts = ["{0} critical".format(counts.get("critical", 0)),
+             "{0} warnings".format(counts.get("warning", 0)),
+             "{0} info".format(counts.get("info", 0))]
+    print("  Issues: {}".format(", ".join(parts)))
+    print("")
     for iss in issues:
-        sev = iss.get("severity", "info")
-        rows += (f"<tr><td>{esc(iss['file'])}</td><td>{esc(iss['rule'])}</td>"
-                 f"<td><span class=\"badge-{sev}\">{sev}</span></td>"
-                 f"<td>{esc(iss['message'])}</td>"
-                 f"<td>{iss.get('line') or '-'}</td></tr>\n")
-    table = ""
-    if issues:
-        table = ("<h2>Issues</h2><table><tr><th>File</th><th>Rule</th>"
-                 "<th>Severity</th><th>Message</th><th>Line</th></tr>\n"
-                 f"{rows}</table>")
+        color = _SEV_COLORS.get(iss.severity, "")
+        tag = "[{}]".format(iss.severity.upper())
+        loc = "{}:{}".format(iss.file, iss.line) if iss.line else iss.file
+        print("  {}{}{} {} -- {}".format(
+            color, tag, _RESET, _truncate(loc, cols - 14), iss.message))
+
+
+def render_markdown(commit: Dict[str, str],
+                     issues: List[Issue]) -> str:
+    """Return a GitHub-flavoured Markdown report."""
+    lines = [
+        "# CommitForge Report", "",
+        "**Type:** `{type}`  ".format(**commit),
+        "**Scope:** `{scope}`  ".format(**commit),
+        "**Summary:** {summary}".format(**commit), "",
+    ]
+    if commit.get("body"):
+        lines.append("```")
+        lines.append(commit["body"])
+        lines.append("```")
+        lines.append("")
+    if not issues:
+        lines.append("No issues found.")
+        return "\n".join(lines)
+    lines += ["## Issues", "",
+              "| File | Type | Severity | Message | Line |",
+              "|------|------|----------|---------|------|"]
+    for iss in issues:
+        lines.append("| `{}` | {} | {} | {} | {} |".format(
+            iss.file, iss.type, iss.severity, iss.message,
+            iss.line if iss.line else "-"))
+    return "\n".join(lines)
+
+
+def render_html(commit: Dict[str, str],
+                issues: List[Issue]) -> str:
+    """Return a minimal HTML page with inline CSS."""
+    return "\n".join([
+        _html_head(),
+        _html_header(commit),
+        _html_issues(issues),
+        "</body></html>",
+    ])
+
+
+def _html_head() -> str:
+    """Return the HTML head block with inline CSS."""
     return (
-        f"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-        f"<title>CommitForge</title><style>"
-        f"body{{font-family:sans-serif;margin:2rem;background:#fafafa}}"
-        f"table{{border-collapse:collapse;width:100%}}"
-        f"th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left}}"
-        f"th{{background:#eee}}"
-        f".badge-critical{{color:#c00}}.badge-warning{{color:#b80}}"
-        f".badge-info{{color:#555}}"
-        f"pre{{background:#f4f4f4;padding:1rem;overflow:auto}}"
-        f"</style></head><body>"
-        f"<h1>CommitForge Report</h1>"
-        f"<p><strong>Branch:</strong> {esc(branch)}</p>"
-        f"<h2>Suggested Commit</h2><pre>{commit_html}</pre>"
-        f"{table}</body></html>"
+        "<!DOCTYPE html><html lang=\"en\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>CommitForge</title>"
+        "<style>"
+        "body{font-family:system-ui,sans-serif;margin:2rem;background:#fafafa}"
+        "table{border-collapse:collapse;width:100%}"
+        "th,td{border:1px solid #d0d0d0;padding:6px 10px;text-align:left}"
+        "th{background:#f0f0f0}"
+        ".critical{color:#c00}.warning{color:#a60}.info{color:#080}"
+        ".badge{display:inline-block;padding:2px 6px;border-radius:3px;"
+        "font-size:0.85em;color:#fff}"
+        ".badge-critical{background:#c00}.badge-warning{background:#a60}"
+        ".badge-info{background:#080}"
+        "pre{background:#f4f4f4;padding:1rem;overflow-x:auto}"
+        "</style></head>"
     )
 
 
-def write_report(content: str, output: Path) -> None:
-    """Write *content* to *output*, creating parent dirs if needed."""
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(content, encoding="utf-8")
-    logger.info("Report written to %s", output)
+def _html_header(commit: Dict[str, str]) -> str:
+    """Return the report title and summary section."""
+    esc = html.escape
+    body = ""
+    if commit.get("body"):
+        body = "<pre>{}</pre>".format(esc(commit["body"]))
+    return "".join([
+        "<body><h1>CommitForge Report</h1>",
+        "<p><strong>Type:</strong> {type} &middot; "
+        "<strong>Scope:</strong> {scope}</p>".format(**commit),
+        "<h2>Summary</h2><pre>{summary}</pre>".format(**commit),
+        body,
+    ])
 
 
-# Helper functions after I boiled them down
+def _html_issues(issues: List[Issue]) -> str:
+    """Return the issues table or a no-issues message."""
+    if not issues:
+        return "<p>No issues found.</p>"
+    esc = html.escape
+    rows = ""
+    for iss in issues:
+        rows += (
+            "<tr><td><code>{0}</code></td><td>{1}</td>"
+            "<td><span class=\"badge badge-{2}\">{2}</span></td>"
+            "<td>{3}</td><td>{4}</td></tr>".format(
+                esc(iss.file), esc(iss.type), esc(iss.severity),
+                esc(iss.message), iss.line if iss.line else "-"))
+    return "".join([
+        "<h2>Issues</h2>",
+        "<table><thead><tr><th>File</th><th>Type</th>"
+        "<th>Severity</th><th>Message</th><th>Line</th></tr></thead>",
+        "<tbody>{}</tbody></table>".format(rows),
+    ])
 
-def _p(text: str) -> None:
-    print(text)
+
+def write_output(content: str, path: Optional[Path] = None) -> None:
+    """Print *content* to stdout, or write to *path* as UTF-8."""
+    if path is None:
+        sys.stdout.write(content)
+        if not content.endswith("\n"):
+            sys.stdout.write("\n")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    logger.info("Report written to %s", path)
 
 
-def _count_severities(issues: List[Dict[str, Any]]) -> Dict[str, int]:
+# Helpers -----------------------------------------------------------------
+
+def _count_severities(issues: List[Issue]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for iss in issues:
-        sev = iss.get("severity", "info")
-        counts[sev] = counts.get(sev, 0) + 1
+        counts[iss.severity] = counts.get(iss.severity, 0) + 1
     return counts
+
+
+def _truncate(text: str, max_len: int) -> str:
+    if max_len <= 3 or len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
