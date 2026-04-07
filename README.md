@@ -1,33 +1,46 @@
 # CommitForge
 
-Tired of writing vague commit messages!? CommitForge parses your actual git diff, infers the right conventional commit type, and scans your repo for things you probably should not be shipping. Stuff like binary blobs you forgot about, TODOs that piled up, functions with no docstrings, imports nobody uses. All in one command with no netowrk needed!
+Repository analysis and commit standardization tool for Python projects.
 
-## Setup
+## Installation
 
 ```bash
-git clone https://github.com/commitforge/commitforge.git && cd commitforge
-python -m commitforge init          # creates .commitforge.json
-python -m commitforge scan          # suggests commit message
-python -m commitforge health        # code health table
-python -m commitforge analyze --format html --output report.html
+pip install commitforge
 ```
 
-**Requires:** Python 3.8+, Git. Works on Windows, macOS, Linux. Zero `pip install`.
+## Usage
 
-## Commands
+```bash
+commitforge init             # Create .commitforge.json
+commitforge scan             # Scan repository
+commitforge scan --verbose   # Show detailed findings
+commitforge suggest          # Generate commit suggestion
+commitforge validate "feat(core): add feature"  # Validate a commit message
+commitforge status           # Quick config summary
+```
 
-| Command | Description |
-|---|---|
-| `init` | Create `.commitforge.json` config |
-| `scan` | Parse `git diff` → suggest conventional commit |
-| `health` | Scan for large files, binaries, TODOs, missing docstrings, unused imports |
-| `report` | Generate Markdown/HTML report of suggested commit |
-| `analyze` | Full pipeline: scan + health + report |
+## Configuration (.commitforge.json)
 
-**Flags:** `--format text|md|html`, `--since YYYY-MM-DD`, `--author NAME`, `--ignore PATTERN`, `--output FILE`, `--verbose`, `--quiet`, `--no-cache`, `--repo PATH`
+```json
+{
+  "ignore_paths": ["node_modules", ".venv", "__pycache__", ".git", "dist"],
+  "max_file_size_mb": 0.5,
+  "severity_thresholds": {"warning": 3, "critical": 1},
+  "commit_mappings": {
+    "test": "test", "docs": "docs", "style": "style",
+    "refactor": "refactor", "perf": "perf", "chore": "chore"
+  }
+}
+```
 
-## Troubleshooting Outputs for reference
-- **Not a git repo**: Run `git init` first.
-- **Permission denied**: Config file unreadable → falls back to defaults.
-- **Encoding errors**: Files read with utf-8 → latin-1 → ignore fallback.
-- **Git not found**: Install Git and ensure it's on your `PATH`.
+- All keys are optional; missing values merge with defaults.
+- `ignore_paths` supports `fnmatch` globs.
+- `max_file_size_mb` is clamped between 0.01 and 1024.0.
+
+## Exit Codes
+
+| Code | Meaning |
+|------|--------|
+| 0 | Success |
+| 1 | Thresholds exceeded or validation failure |
+| 2 | Configuration or I/O error |

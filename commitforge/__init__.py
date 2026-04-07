@@ -1,18 +1,24 @@
-"""CommitForge is an offline CLI for semantic commit suggestions and repo health checks made to help with my coding journey and to slightly automate and optimize it."""
+"""commitforge -- Repository analysis and commit standardization tool."""
+
+from __future__ import annotations
 
 __version__ = "1.0.0"
+__all__ = [
+    "Config",
+    "Finding",
+    "ScanResult",
+    "CommitSuggestion",
+    "load_config",
+    "create_default_config",
+    "validate_config",
+    "scan_repo",
+    "analyze_changes",
+    "validate_commit_message",
+    "app",
+]
 
-DEFAULT_CONFIG = {
-    "ignored_paths": ["node_modules", ".git", ".venv", "__pycache__", "dist", "build"],
-    "max_file_size_mb": 0.5,
-    "severity_thresholds": {"warning": 3, "critical": 1},
-    "commit_type_mappings": {
-        "test": "test",
-        "docs": "docs",
-        "style": "style",
-        "refactor": "refactor",
-        "perf": "perf",
-        "chore": "chore",
-    },
-    "ignored_patterns": ["*.pyc", "*.pyo", "*.so", "*.dll"],
-}
+from commitforge.config import create_default_config, load_config, validate_config
+from commitforge.analyzer import analyze_changes
+from commitforge.scanner import scan_repo
+from commitforge.validator import validate_commit_message
+from commitforge.types import CommitSuggestion, Config, Finding, ScanResult
