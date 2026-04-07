@@ -5,27 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "commitforge"
 version = "1.0.0"
-description = "Offline, zero-dependency Git repository analyzer and conventional commit generator"
+description = "Tired of writing vague commit messages? CommitForge parses your actual changes, infers the right conventional commit type, and scans your repo for things you shouldn't be shipping like binary blobs, forgotten TODOs, undocumented functions, and dead imports. All in one command with zero dependencies, no network calls, and no pip install required."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
-authors = [
-    {name = "CommitForge Contributors"},
-]
-keywords = ["git", "commit", "conventional-commits", "code-health", "offline"]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Environment :: Console",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Typing :: Typed",
-]
 
 [project.scripts]
 commitforge = "commitforge.cli:main"

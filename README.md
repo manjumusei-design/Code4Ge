@@ -1,6 +1,6 @@
 # CommitForge
 
-Offline+zero-dependency Git repository analyzer and conventional commit generator.
+Tired of writing vague commit messages!? CommitForge parses your actual git diff, infers the right conventional commit type, and scans your repo for things you probably should not be shipping. Stuff like binary blobs you forgot about, TODOs that piled up, functions with no docstrings, imports nobody uses. All in one command with no netowrk needed!
 
 ## Setup
 
