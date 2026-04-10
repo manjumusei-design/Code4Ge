@@ -1,10 +1,9 @@
 # CommitForge
 
-Offline commit assistant and repo health checker. One command. One report. Done.
-
+Offline commit assistant and repo health checker. 
 Developers waste mental energy writing inconsistent commit messages and unknowingly let technical debt accumulate. Existing tools are either cloud-dependent, heavy, or require complex setup.
 
-CommitForge eliminates that friction with a **100% offline, zero-config CLI** that analyzes your working tree, suggests conventional commit messages, flags repo anti-patterns, and outputs clean reports in under 2 seconds.
+CommitForge eliminates that friction with a **100% offline, zero-config CLI** that analyzes your working tree, suggests conventional commit messages, flags repo anti-patterns as well as health , and outputs a clean report in under 2 seconds.
 
 ## What It Solves
 
@@ -16,16 +15,8 @@ CommitForge eliminates that friction with a **100% offline, zero-config CLI** th
 | **Review blindness** | No fast way to assess repo health without running full CI pipelines | `commitforge` → instant, readable report. Perfect for PR descriptions or quick sanity checks. |
 
 ## Quick Start
+Just go to releases, install the .exe and drag it to the same folder root of your project WITH UNCOMIITTED CHANGES and then open up the html report in the same folder! Easy peasy!
 
-```bash
-# Download commitforge.exe from Releases
-# Or install via pip:
-pip install commitforge
-
-```bash
-cd your-project
-commitforge
-```
 
 That's the entire workflow. It:
 1. Auto-detects your git root
@@ -53,7 +44,7 @@ Before you commit:
 Report: C:\Users\User\Desktop\Code4Ge\commitforge-report.html
 ```
 
-The HTML report opens automatically — shareable, readable, no setup needed.
+The HTML report opens automatically — shareable, readable, so no extra setup needed.
 
 ## Flags
 
@@ -111,17 +102,8 @@ All keys are optional. Missing values merge with built-in defaults.
 - Python 3.9+
 - Zero runtime dependencies (the `.exe` is fully self-contained)
 - Type-checked with `mypy --strict`
-- Tested with `pytest` (90%+ coverage)
 - Works identically on Windows, macOS, Linux
 
-## Dev Setup
-
-```bash
-pip install pytest ruff mypy typer
-pytest commitforge/tests -v
-mypy --strict commitforge/
-ruff check commitforge/ tests/
-```
 
 ## License
 
